@@ -454,7 +454,7 @@ func (mdb *memdbSlice) insertSecIndex(key []byte, docid []byte, workerId int, me
 
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), allowLargeKeys)
 	entry, err := NewSecondaryIndexEntry(key, docid, mdb.idxDefn.IsArrayIndex,
-		1, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta)
+		1, 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta)
 	if err != nil {
 		logging.Errorf("MemDBSlice::insertSecIndex Slice Id %v IndexInstId %v PartitionId %v "+
 			"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
@@ -551,7 +551,7 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 		if item != nil { // nil item indicates it should not be deleted
 			mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(item), true)
 			entry, err := NewSecondaryIndexEntry2(item, docid, false,
-				oldKeyCount[i], nil, mdb.encodeBuf[workerId][:0], false, nil)
+				oldKeyCount[i], 0, nil, mdb.encodeBuf[workerId][:0], false, nil)
 			if err != nil {
 				logging.Errorf("MemDBSlice::insertSecArrayIndex Slice Id %v IndexInstId %v PartitionId %v "+
 					"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
@@ -569,7 +569,7 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 			t0 := time.Now()
 			mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), allowLargeKeys)
 			entry, err := NewSecondaryIndexEntry(key, docid, false,
-				newKeyCount[i], mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], meta)
+				newKeyCount[i], 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], meta)
 			if err != nil {
 				logging.Errorf("MemDBSlice::insertSecArrayIndex Slice Id %v IndexInstId %v PartitionId %v "+
 					"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
