@@ -206,7 +206,7 @@ type IndexDefn struct {
 	Nodes              []string   `json:"nodes,omitempty"`
 	IsArrayIndex       bool       `json:"isArrayIndex,omitempty"`
 	NumReplica         uint32     `json:"numReplica,omitempty"`
-	TTL 	 	       uint64     `json:"ttl,omitempty"`
+	TTL 	 	       uint32     `json:"ttl,omitempty"`
 	PartitionKeys      []string   `json:"partitionKeys,omitempty"`
 	RetainDeletedXATTR bool       `json:"retainDeletedXATTR,omitempty"`
 	HashScheme         HashScheme `json:"hashScheme,omitempty"`

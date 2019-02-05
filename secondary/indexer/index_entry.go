@@ -121,6 +121,7 @@ func (e *primaryIndexEntry) String() string {
 // Format:
 // [collate_json_encoded_sec_key][raw_docid_bytes][optional_expiry_4_bytes][optional_count_2_bytes][len_of_docid_2_bytes]
 // The MSB of right byte of docid length indicates whether count is encoded or not
+// The second MSB of right byte of docid length indicates whether expiry is encoded or not
 type secondaryIndexEntry []byte
 
 func NewSecondaryIndexEntry(key []byte, docid []byte, isArray bool, count int,

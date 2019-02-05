@@ -196,6 +196,8 @@ func (s *IndexScanSource) Routine() error {
 		iterCount++
 		s.p.rowsScanned++
 
+		l.Infof("amd:entry = [%v]", entry)
+
 		skipRow := false
 		var ck [][]byte
 		var dk value.Values
@@ -229,9 +231,14 @@ func (s *IndexScanSource) Routine() error {
 		}
 
 		if !r.isPrimary {
+			e := secondaryIndexEntry(entry)
+			l.Infof("amd: set=[%v], now=[%v]", int64(e.Expiry()), time.Now().Unix())
+			if e.isExpiryEncoded() && time.Now().After(time.Unix(int64(e.Expiry()), 0)) {
+				l.Infof("amd: expired!")
+				return nil
+			}
 			if r.GroupAggr == nil ||
 				(r.GroupAggr != nil && !r.GroupAggr.OnePerPrimaryKey) {
-				e := secondaryIndexEntry(entry)
 				count = e.Count()
 			}
 		}

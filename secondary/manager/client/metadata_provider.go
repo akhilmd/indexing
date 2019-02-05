@@ -1024,7 +1024,7 @@ func (o *MetadataProvider) PrepareIndexDefn(
 	var docKeySize uint64 = 0
 	var arrSize uint64 = 0
 	var residentRatio float64 = 0
-	var ttl uint64 = 0
+	var ttl uint32 = 0
 
 	version := o.GetIndexerVersion()
 	clusterVersion := o.GetClusterVersion()
@@ -1225,7 +1225,7 @@ func (o *MetadataProvider) PrepareIndexDefn(
 		Immutable:          immutable,
 		IsArrayIndex:       isArrayIndex,
 		NumReplica:         uint32(numReplica),
-		TTL:				uint64(ttl),
+		TTL:				uint32(ttl),
 		HashScheme:         c.CRC32,
 		NumPartitions:      uint32(numPartition),
 		RetainDeletedXATTR: retainDeletedXATTR,
@@ -1572,26 +1572,26 @@ func (o *MetadataProvider) getNumPartitionParam(scheme c.PartitionScheme, plan m
 	return numPartition, nil, false
 }
 
-func (o *MetadataProvider) getTTLParam(plan map[string]interface{}) (uint64, error, bool) {
+func (o *MetadataProvider) getTTLParam(plan map[string]interface{}) (uint32, error, bool) {
 
-	ttl := uint64(0)
+	ttl := uint32(0)
 
 	ttl2, ok := plan["ttl"].(float64)
 	if !ok {
 		ttl_str, ok := plan["ttl"].(string)
 		if ok {
 			var err error
-			ttl3, err := strconv.ParseUint(ttl_str, 10, 64)
+			ttl3, err := strconv.ParseUint(ttl_str, 10, 32)
 			if err != nil {
 				return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
 			}
-			ttl = uint64(ttl3)
+			ttl = uint32(ttl3)
 
 		} else if _, ok := plan["ttl"]; ok {
 			return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
 		}
 	} else {
-		ttl = uint64(ttl2)
+		ttl = uint32(ttl2)
 	}
 
 	return ttl, nil, false

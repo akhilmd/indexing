@@ -571,9 +571,15 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 		}
 	}
 
+	var expiry uint32
+	if mdb.idxDefn.TTL > 0 {
+		// logging.Infof("amd:insertSecIndex: expiry=[%v]", expiry)
+		expiry = uint32(time.Now().Unix()) + mdb.idxDefn.TTL
+		mdb.insertQueue.Enqueue(qValue{docid, expiry})
+	}
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), allowLargeKeys)
 	entry, err := NewSecondaryIndexEntry(key, docid, mdb.idxDefn.IsArrayIndex,
-		1, 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta)
+		1, expiry, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta)
 	if err != nil {
 		logging.Errorf("plasmaSlice::insertSecIndex Slice Id %v IndexInstId %v PartitionId %v "+
 			"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
