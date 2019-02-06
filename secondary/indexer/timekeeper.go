@@ -2149,7 +2149,10 @@ func (tk *timekeeper) setSnapshotType(streamId common.StreamId, bucket string,
 		snapPersistInterval := tk.getPersistInterval()
 		persistDuration := time.Duration(snapPersistInterval) * time.Millisecond
 
+		logging.Infof("amd:setSnapshotType:flushTs.IsSnapAligned")
+
 		if time.Since(lastPersistTime) > persistDuration {
+			logging.Infof("amd:setSnapshotType: time.Since(lastPersistTime) > persistDuration(%v)", persistDuration.Seconds())
 			flushTs.SetSnapType(common.DISK_SNAP)
 			tk.ss.streamBucketLastPersistTime[streamId][bucket] = time.Now()
 			tk.ss.streamBucketSkippedInMemTs[streamId][bucket] = 0

@@ -25,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"container/list"
 
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/indexing/secondary/common/queryutil"
@@ -140,6 +141,8 @@ type plasmaSlice struct {
 	writerLock    sync.Mutex // mutex for writer tuning
 	samplerStopCh chan bool  // stop sampler
 	token         *token     // token
+
+	insertQueue *aQueue
 }
 
 func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
@@ -215,11 +218,42 @@ func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
 	// intiialize and start the writers
 	slice.setupWriters()
 
+	if slice.idxDefn.TTL > 0 {
+		slice.insertQueue = NewAQueue()
+		go slice.expiryJanitor()
+	}
+
 	logging.Infof("plasmaSlice:NewplasmaSlice Created New Slice Id %v IndexInstId %v partitionId %v "+
 		"WriterThreads %v cleaner %v", sliceId, idxInstId, partitionId, slice.numWriters, slice.mainstore.LSSCleanerConcurrency)
 
 	slice.setCommittedCount()
 	return slice, nil
+}
+
+func (slice *plasmaSlice) expiryJanitor() {
+	logging.Infof("amd:janitor-%s: START!", slice.idxDefn.Name)
+	var front *list.Element
+	var currentTime uint32
+	for {
+		currentTime = uint32(time.Now().Unix())
+		logging.Infof("amd:janitor-%s: currentTime = %v", slice.idxDefn.Name, currentTime)
+
+		for front = slice.insertQueue.Front();
+			front != nil && front.Value.(QValue).GetExpiry() < currentTime;
+			front = slice.insertQueue.Front() {
+				// logging.Infof("amd:janitor-%s:deq: %s, %v", slice.idxDefn.Name, front.Value.(QValue).GetDocID(), front.Value.(QValue).GetExpiry())
+				slice.insertQueue.Dequeue()
+				slice.delete(front.Value.(QValue).GetDocID(), 0)
+		}
+
+		sleepDuration := time.Duration(3)
+		if front = slice.insertQueue.Front(); front != nil {
+			sleepDuration += time.Duration(front.Value.(QValue).GetExpiry() - currentTime)
+		}
+
+		logging.Infof("amd:janitor-%s: sleeping for %v seconds", slice.idxDefn.Name, sleepDuration)
+		time.Sleep(sleepDuration * time.Second)
+	}
 }
 
 func (slice *plasmaSlice) initStores() error {
@@ -2783,4 +2817,70 @@ func deleteFreeWriters(instId common.IndexInstId) {
 	freeWriters.mutex.Lock()
 	defer freeWriters.mutex.Unlock()
 	delete(freeWriters.tokens, instId)
+}
+
+type AQueue interface {
+	Enqueue(v QValue)
+	Dequeue()
+	Front() *list.Element
+}
+
+type QValue interface {
+	String() string
+	GetDocID() []byte
+	GetExpiry() uint32
+}
+
+type qValue struct {
+	docid []byte
+	expiry uint32
+}
+
+func (v qValue) String() string {
+	return string(v.docid)
+}
+
+func (v qValue) GetDocID() []byte {
+	return v.docid
+}
+
+func (v qValue) GetExpiry() uint32 {
+	return v.expiry
+}
+
+type aQueue struct {
+	mu sync.Mutex
+	dll *list.List
+	revMap map[string]*list.Element
+}
+
+func NewAQueue() *aQueue{
+	return &aQueue{
+		dll: list.New(),
+		revMap: make(map[string]*list.Element)}
+}
+
+func (q *aQueue) Front() *list.Element {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.dll.Front()
+}
+
+func (q *aQueue) Dequeue() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if front := q.dll.Front(); front != nil {
+		q.dll.Remove(front)
+		delete(q.revMap, front.Value.(QValue).String())
+	}
+}
+
+func (q *aQueue) Enqueue(v QValue) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	mapKey := v.String()
+	if oldElement, exists := q.revMap[mapKey]; exists {
+		q.dll.Remove(oldElement)
+	}
+	q.revMap[mapKey] = q.dll.PushBack(v)
 }
