@@ -228,6 +228,8 @@ func NewIndexer(config common.Config) (Indexer, Message) {
 
 	logging.Infof("Indexer::NewIndexer Status Warmup")
 
+	common.UpdateLastKnownUTCTime()
+
 	var res Message
 
 	// Setting manager must be the first component to initialized.  In particular, setting manager will

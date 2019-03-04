@@ -564,6 +564,8 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 	var ndel int
 	var changed bool
 
+	logging.Infof("amd: abs time now = %d", common.CalcAbsNow())
+
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
 		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId); !changed {
