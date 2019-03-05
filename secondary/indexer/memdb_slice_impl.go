@@ -762,6 +762,7 @@ func (mdb *memdbSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 }
 
 func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
+	logging.Infof("amd: doPersistSnapshot()")
 	var concurrency int = 1
 
 	if atomic.CompareAndSwapInt32(&mdb.isPersistorActive, 0, 1) {
@@ -792,6 +793,19 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 		// it is enough to throttle just one writer go routine of each batch.
 		var throttleToken int64
 		limitWriterThreads := func(itm *memdb.ItemEntry) {
+			var docid []byte
+			entry := secondaryIndexEntry(itm.Item().Bytes())
+			docid, _ = entry.ReadDocId(docid)
+			currTime := uint32(common.CalcAbsNow()/1000000000)
+
+			if entry.isExpiryEncoded() && currTime > entry.Expiry() {
+				logging.Infof("amd: deleting: %s", docid)
+				// only one will succeed since an entry into back exists only in one worker's back index
+				// The results of the delete will be visible after the next snapshot
+				for workerId := 0; workerId < mdb.numWriters; workerId++ {
+					mdb.cmdCh[workerId] <- indexMutation{op: opDelete, docid: docid}
+				}
+			}
 			if atomic.CompareAndSwapInt64(&throttleToken, 0, 1) {
 				moiWriterSemaphoreCh <- true
 			}
