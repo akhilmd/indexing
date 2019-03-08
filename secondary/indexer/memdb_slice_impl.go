@@ -416,6 +416,8 @@ loop:
 func (mdb *memdbSlice) insert(key []byte, docid []byte, workerId int, meta *MutationMeta) int {
 	var nmut int
 
+	logging.Infof("amd: inserting: ttl=[%d], expiry_time=[%d]", mdb.idxDefn.TTL, uint32(common.CalcAbsNow()/1000000000) + mdb.idxDefn.TTL)
+
 	if mdb.isPrimary {
 		nmut = mdb.insertPrimaryIndex(key, docid, workerId)
 	} else if len(key) == 0 {

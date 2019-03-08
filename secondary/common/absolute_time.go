@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akhilmd/ntp"
+	// "github.com/akhilmd/ntp"
 )
 
 var lastKnownUTCTime time.Time
@@ -24,12 +24,16 @@ func CalcAbsNow() int64 {
 }
 
 func UpdateLastKnownUTCTime() {
-	response, _ := ntp.Query("time.apple.com")
-	responseRecvTime := response.DestTime.Local()
+	// avoid pinging NTP server during developement
+	// response, _ := ntp.Query("time.apple.com")
+	// responseRecvTime := response.DestTime.Local()
+
+	responseRecvTime := time.Now()
 
 	updateLock.Lock()
 	defer updateLock.Unlock()
 
-	lastKnownOffset = response.ClockOffset
+	lastKnownOffset = 0
+	// lastKnownOffset = response.ClockOffset
 	lastKnownUTCTime = responseRecvTime.Add(lastKnownOffset)
 }
