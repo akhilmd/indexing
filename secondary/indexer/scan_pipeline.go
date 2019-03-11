@@ -229,9 +229,18 @@ func (s *IndexScanSource) Routine() error {
 		}
 
 		if !r.isPrimary {
+			e := secondaryIndexEntry(entry)
+			currTime := uint32(c.CalcAbsNow()/1000000000)
+
+			if e.isExpiryEncoded() && currTime > e.Expiry() {
+				l.Infof("amd: expiry = [%d] currTime = [%d] EXPIRED", e.Expiry(), currTime)
+				return nil
+			} else {
+				l.Infof("amd: expiry = [%d] currTime = [%d]", e.Expiry(), currTime)
+			}
+
 			if r.GroupAggr == nil ||
 				(r.GroupAggr != nil && !r.GroupAggr.OnePerPrimaryKey) {
-				e := secondaryIndexEntry(entry)
 				count = e.Count()
 			}
 		}
