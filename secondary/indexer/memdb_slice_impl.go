@@ -50,6 +50,7 @@ type indexMutation struct {
 	key   []byte
 	docid []byte
 	meta  *MutationMeta
+	expiry uint32
 }
 
 func docIdFromEntryBytes(e []byte) []byte {
@@ -399,7 +400,7 @@ loop:
 
 			case opDelete:
 				start = time.Now()
-				nmut = mdb.delete(icmd.docid, workerId)
+				nmut = mdb.delete(icmd.docid, workerId, icmd.expiry)
 				elapsed = time.Since(start)
 				mdb.totalFlushTime += elapsed
 
@@ -429,7 +430,7 @@ func (mdb *memdbSlice) insert(key []byte, docid []byte, workerId int, meta *Muta
 	if mdb.isPrimary {
 		nmut = mdb.insertPrimaryIndex(key, docid, workerId)
 	} else if len(key) == 0 {
-		nmut = mdb.delete(docid, workerId)
+		nmut = mdb.delete(docid, workerId, 0)
 	} else {
 		if mdb.idxDefn.IsArrayIndex {
 			nmut = mdb.insertSecArrayIndex(key, docid, workerId, meta)
@@ -474,7 +475,7 @@ func (mdb *memdbSlice) insertSecIndex(key []byte, docid []byte, workerId int, me
 	if err != nil {
 		logging.Errorf("MemDBSlice::insertSecIndex Slice Id %v IndexInstId %v PartitionId %v "+
 			"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-		return mdb.deleteSecIndex(docid, workerId)
+		return mdb.deleteSecIndex(docid, workerId, 0)
 	}
 
 	newNode := mdb.main[workerId].Put2(entry)
@@ -607,13 +608,13 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 	return nmut
 }
 
-func (mdb *memdbSlice) delete(docid []byte, workerId int) int {
+func (mdb *memdbSlice) delete(docid []byte, workerId int, expiry uint32) int {
 	var nmut int
 
 	if mdb.isPrimary {
 		nmut = mdb.deletePrimaryIndex(docid, workerId)
 	} else if !mdb.idxDefn.IsArrayIndex {
-		nmut = mdb.deleteSecIndex(docid, workerId)
+		nmut = mdb.deleteSecIndex(docid, workerId, expiry)
 	} else {
 		nmut = mdb.deleteSecArrayIndex(docid, workerId)
 	}
@@ -643,8 +644,24 @@ func (mdb *memdbSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int)
 
 }
 
-func (mdb *memdbSlice) deleteSecIndex(docid []byte, workerId int) int {
+func (mdb *memdbSlice) deleteSecIndex(docid []byte, workerId int, expiry uint32) int {
 	lookupentry := entryBytesFromDocId(docid)
+
+	if expiry > 0 {
+		node := mdb.back[workerId].Get(lookupentry)
+
+		if node != nil {
+			entry := secondaryIndexEntry(((*memdb.Item)((*skiplist.Node)(node).Item())).Bytes())
+			// entry := secondaryIndexEntry((*memdb.Item)(node).Bytes())
+
+			if expiry != entry.Expiry() {
+				logging.Infof("amd: deleteSecIndex docid = [%s], exp from persist = [%d], exp from entry = [%d] SKIPPING!", docid, expiry, entry.Expiry())
+				return 0
+			} else {
+				logging.Infof("amd: deleteSecIndex docid = [%s], exp from persist = [%d], exp from entry = [%d]", docid, expiry, entry.Expiry())
+			}
+		}
+	}
 
 	// Delete entry from back and main index if present
 	t0 := time.Now()
@@ -797,13 +814,14 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 			entry := secondaryIndexEntry(itm.Item().Bytes())
 			docid, _ = entry.ReadDocId(docid)
 			currTime := uint32(common.CalcAbsNow()/1000000000)
+			expiry := entry.Expiry()
 
-			if entry.isExpiryEncoded() && currTime > entry.Expiry() {
+			if entry.isExpiryEncoded() && currTime > expiry {
 				logging.Infof("amd: deleting: %s", docid)
 				// only one will succeed since an entry into back exists only in one worker's back index
 				// The results of the delete will be visible after the next snapshot
 				for workerId := 0; workerId < mdb.numWriters; workerId++ {
-					mdb.cmdCh[workerId] <- indexMutation{op: opDelete, docid: docid}
+					mdb.cmdCh[workerId] <- indexMutation{op: opDelete, docid: docid, expiry: expiry}
 				}
 			}
 			if atomic.CompareAndSwapInt64(&throttleToken, 0, 1) {
