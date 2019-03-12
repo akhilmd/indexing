@@ -778,6 +778,10 @@ func (mdb *memdbSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 	return s, err
 }
 
+// Generated using the AUTODIN II polynomial based on
+// gocbcore at cbcrc.go and from FreeBSD at src/usr.bin/cksum/crc32.c.
+var crc32Autodin2 *crc32.Table = crc32.MakeTable(0xEDB88320)
+
 func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 	logging.Infof("amd: doPersistSnapshot()")
 	var concurrency int = 1
@@ -798,6 +802,7 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 		if total > 0 {
 			concurrency = int(math.Ceil(float64(maxThreads) * float64(indexCount) / float64(total)))
 		}
+		numVbucketsM1 := uint32(mdb.sysconf["numVbuckets"].Int() - 1)
 
 		mdb.confLock.RUnlock()
 
@@ -817,12 +822,11 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 			expiry := entry.Expiry()
 
 			if entry.isExpiryEncoded() && currTime > expiry {
-				logging.Infof("amd: deleting: %s", docid)
-				// only one will succeed since an entry into back exists only in one worker's back index
-				// The results of the delete will be visible after the next snapshot
-				for workerId := 0; workerId < mdb.numWriters; workerId++ {
-					mdb.cmdCh[workerId] <- indexMutation{op: opDelete, docid: docid, expiry: expiry}
-				}
+				// Calculate workerId from the docid by using CRC32 hash
+				// CRC32 hash with AUTODIN II table and output right shifted by 16
+				// Use (n & (numVbuckets - 1)) instead of (n % numVbuckets) since numVbuckets is power of 2
+				mdb.cmdCh[int((crc32.Checksum(docid, crc32Autodin2) >> 16) & numVbucketsM1) % mdb.numWriters] <- indexMutation{
+					op: opDelete, docid: docid, expiry: expiry}
 			}
 			if atomic.CompareAndSwapInt64(&throttleToken, 0, 1) {
 				moiWriterSemaphoreCh <- true
