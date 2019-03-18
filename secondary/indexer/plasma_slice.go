@@ -564,8 +564,6 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 	var ndel int
 	var changed bool
 
-	logging.Infof("amd: abs time now = %d", common.CalcAbsNow())
-
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
 		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId); !changed {
@@ -992,6 +990,8 @@ func (mdb *plasmaSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 		committed:  info.IsCommitted(),
 		MainSnap:   mdb.mainstore.NewSnapshot(),
 	}
+
+	logging.Infof("amd: slice.OpenSnapshot(), mainsnap sn = [%d]", s.MainSnap.Sn())
 
 	if !mdb.isPrimary {
 		s.BackSnap = mdb.backstore.NewSnapshot()
@@ -1930,11 +1930,17 @@ func (s *plasmaSnapshot) Range(ctx IndexReaderContext, low, high IndexKey, inclu
 }
 
 func (s *plasmaSnapshot) All(ctx IndexReaderContext, callb EntryCallback) error {
+	if ctx == nil {
+		logging.Infof("amd: lastSnap sn = [%d]", s.MainSnap.Sn())
+		return nil 
+	}
 	return s.Range(ctx, MinIndexKey, MaxIndexKey, Both, callb)
 }
 
 func (s *plasmaSnapshot) Iterate(ctx IndexReaderContext, low, high IndexKey, inclusion Inclusion,
 	cmpFn CmpEntry, callback EntryCallback) error {
+	logging.Infof("amd: Iterate sn = [%d]", s.MainSnap.Sn())
+		
 	var entry IndexEntry
 	var err error
 	t0 := time.Now()

@@ -111,6 +111,19 @@ func NewScanCoordinator(supvCmdch MsgChannel, supvMsgch MsgChannel,
 	go s.run()
 	go s.listenSnapshot()
 
+	// go func() {
+	// 	for {
+	// 		for _, is := range s.lastSnapshot{
+	// 			for _, v := range is.Partitions() {
+	// 				for _, ss := range v.Slices() {
+	// 					_ = ss.Snapshot().All(nil, nil)
+	// 				}
+	// 			}
+	// 		}
+	// 		time.Sleep(1 * time.Second)
+	// 	}
+	// }()
+
 	return s, &MsgSuccess{}
 
 }
@@ -141,6 +154,12 @@ func (s *scanCoordinator) listenSnapshot() {
 		func(ss IndexSnapshot) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
+
+			for _, v := range snapshot.Partitions() {
+				for _, ss := range v.Slices() {
+					_ = ss.Snapshot().All(nil, nil)
+				}
+			}
 
 			if oldSnap, ok := s.lastSnapshot[ss.IndexInstId()]; ok {
 				delete(s.lastSnapshot, ss.IndexInstId())
@@ -275,6 +294,11 @@ func (s *scanCoordinator) serverCallback(protoReq interface{}, ctx interface{}, 
 
 	t0 := time.Now()
 	is, err := s.getRequestedIndexSnapshot(req)
+	for _, v := range is.Partitions() {
+		for _, ss := range v.Slices() {
+			_ = ss.Snapshot().All(nil, nil)
+		}
+	}
 	if s.tryRespondWithError(w, req, err) {
 		return
 	}
@@ -492,6 +516,7 @@ func (s *scanCoordinator) getRequestedIndexSnapshot(r *ScanRequest) (snap IndexS
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 
+		logging.Infof("amd: getRequestedIndexSnapshot")
 		ss, ok := s.lastSnapshot[r.IndexInstId]
 		cons := *r.Consistency
 		if ok && ss != nil && isSnapshotConsistent(ss, cons, r.Ts) {

@@ -317,6 +317,13 @@ func (s *IndexScanSource) Routine() error {
 		return nil
 	}
 
+	l.Infof("amd: Routine()")
+	for _, v := range s.is.Partitions() {
+		for _, ss := range v.Slices() {
+			_ = ss.Snapshot().All(nil, nil)
+		}
+	}
+
 	sliceSnapshots, err1 := GetSliceSnapshots(s.is, s.p.req.PartitionIds)
 	if err1 != nil {
 		return err1

@@ -378,6 +378,9 @@ func (s *storageMgr) createSnapshotWorker(streamId common.StreamId, bucket strin
 								id:   slice.Id(),
 								snap: newSnapshot,
 							}
+							logging.Infof("amd: storage_mgr after new snap")
+							newSnapshot.All(nil, nil)
+							// logging.Infof("amd: newSnapshot sn = [%d]", newSnapshot.MainSnap.Sn())
 							sliceSnaps[slice.Id()] = ss
 						} else {
 							// Increment reference
@@ -536,6 +539,13 @@ func (s *storageMgr) updateSnapMapAndNotify(is IndexSnapshot, idxStats *IndexSta
 
 	s.muSnap.Lock()
 	defer s.muSnap.Unlock()
+
+	logging.Infof("amd: updateSnapMapAndNotify()")
+	for _, v := range is.Partitions() {
+		for _, ss := range v.Slices() {
+			_ = ss.Snapshot().All(nil, nil)
+		}
+	}
 
 	DestroyIndexSnapshot(s.indexSnapMap[is.IndexInstId()])
 	s.indexSnapMap[is.IndexInstId()] = is

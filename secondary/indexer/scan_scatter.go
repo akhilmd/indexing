@@ -197,6 +197,9 @@ func scanSingleSlice(request *ScanRequest, scan Scan, ctx IndexReaderContext, sn
 		}
 	}
 
+	logging.Infof("amd: scatter - scanSingleSlice()")
+	snap.Snapshot().All(nil, nil)
+
 	var err error
 	if scan.ScanType == AllReq {
 		err = snap.Snapshot().All(ctx, handler)
