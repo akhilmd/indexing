@@ -395,6 +395,9 @@ func (s *storageMgr) createSnapshotWorker(streamId common.StreamId, bucket strin
 							logging.Debugf("StorageMgr::handleCreateSnapshot SnapTs %v FlushTs %v", snapTs, ts)
 							continue
 						}
+
+						// Purger cannot run during snapshotting and is possibly paused in waitPersist.
+						slice.ResumePurger()
 					}
 
 					ps := &partitionSnapshot{

@@ -60,6 +60,7 @@ func Validate(expectedResponse1 tc.ScanResponse, actualResponse tc.ScanResponseA
 }
 
 func ValidateActual(expectedResponse tc.ScanResponseActual, actualResponse tc.ScanResponseActual) error {
+	log.Printf("expLen=[%d], actLen=[%d]", len(expectedResponse), len(actualResponse))
 	if len(expectedResponse) != len(actualResponse) {
 		errorStr := fmt.Sprintf("Expected scan count %d does not match actual scan count %d", len(expectedResponse), len(actualResponse))
 		log.Printf("%v", errorStr)

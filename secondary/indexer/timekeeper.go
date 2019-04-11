@@ -41,6 +41,7 @@ type timekeeper struct {
 
 	//map of indexInstId to its Initial Build Info
 	indexBuildInfo map[common.IndexInstId]*InitialBuildInfo
+	streamBucketLastShiftTime time.Time
 
 	config common.Config
 
@@ -1903,6 +1904,33 @@ func (tk *timekeeper) checkCatchupStreamReadyToMerge(cmd Message) bool {
 //generates a new StabilityTS
 func (tk *timekeeper) generateNewStabilityTS(streamId common.StreamId,
 	bucket string) {
+	// snapPersistInterval := tk.getPersistInterval()
+	// shiftDuration := time.Duration(snapPersistInterval) * time.Millisecond
+	// lastShiftTime := tk.streamBucketLastShiftTime
+
+	// // for all indexes, for all slices, call ShiftHist
+	// if common.GetStorageMode() == common.PLASMA && time.Since(lastShiftTime) > shiftDuration {
+	// 	//for every index managed by this indexer
+	// 	for idxInstId, partnMap := range tk.indexPartnMap {
+	// 		idxInst := tk.indexInstMap[idxInstId]
+
+	// 		//if index belongs to the flushed bucket and stream
+	// 		if idxInst.Defn.Bucket == bucket &&
+	// 			idxInst.Stream == streamId &&
+	// 			idxInst.State != common.INDEX_STATE_DELETED {
+	// 			//for all partitions managed by this indexer
+	// 			for _, partnInst := range partnMap {
+	// 				sc := partnInst.Sc
+
+	// 				// For all slices in the partn
+	// 				for _, slice := range sc.GetAllSlices() {
+	// 					slice.ShiftHist()
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// 	tk.streamBucketLastShiftTime = time.Now()
+	// }
 
 	tk.lock.Lock()
 	defer tk.lock.Unlock()

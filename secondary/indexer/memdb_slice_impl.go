@@ -50,6 +50,7 @@ type indexMutation struct {
 	key   []byte
 	docid []byte
 	meta  *MutationMeta
+	sn    uint64
 }
 
 func docIdFromEntryBytes(e []byte) []byte {
@@ -740,6 +741,9 @@ type memdbSnapshot struct {
 	refCount int32
 }
 
+func (mdb *memdbSlice) ShiftHist() { }
+// func (mdb *memdbSlice) SetNextSnapshotNumber() { }
+
 // Creates an open snapshot handle from snapshot info
 // Snapshot info is obtained from NewSnapshot() or GetSnapshots() API
 // Returns error if snapshot handle cannot be created.
@@ -1140,6 +1144,9 @@ func (mdb *memdbSlice) LastRollbackTs() *common.TsVbuuid {
 	return mdb.lastRollbackTs
 }
 
+func (mdb *memdbSlice) PausePurger() { }
+func (mdb *memdbSlice) ResumePurger() { }
+
 //slice insert/delete methods are async. There
 //can be outstanding mutations in internal queue to flush even
 //after insert/delete have return success to caller.
@@ -1407,6 +1414,10 @@ func (info *memdbSnapshotInfo) IsCommitted() bool {
 
 func (info *memdbSnapshotInfo) Stats() map[string]interface{} {
 	return info.IndexStats
+}
+
+func (info *memdbSnapshotInfo) GetExpiryHistogram() *Histogram {
+	return nil
 }
 
 func (info *memdbSnapshotInfo) String() string {

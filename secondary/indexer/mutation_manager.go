@@ -13,6 +13,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	// "time"
 
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/indexing/secondary/logging"
@@ -842,6 +843,7 @@ func (m *mutationMgr) handlePersistMutationQueue(cmd Message) {
 
 }
 
+// var then time.Time
 //persistMutationQueue implements the actual persist for the queue
 func (m *mutationMgr) persistMutationQueue(q IndexerMutationQueue,
 	streamId common.StreamId, bucket string, ts *common.TsVbuuid,
@@ -855,7 +857,35 @@ func (m *mutationMgr) persistMutationQueue(q IndexerMutationQueue,
 	m.flusherWaitGroup.Add(1)
 
 	go func(config common.Config) {
+		// logging.Infof("amd: persistMutationQueue t=[%v]", time.Since(then))
+		// then = time.Now()
 		defer m.flusherWaitGroup.Done()
+
+		// Do SetNextSn here, blocking, on all the snapshots for
+		// which newsnapshots are created
+		if common.GetStorageMode() == common.PLASMA {
+			//for every index managed by this indexer
+			for idxInstId, partnMap := range m.indexPartnMap {
+				idxInst := m.indexInstMap[idxInstId]
+
+				//if index belongs to the flushed bucket and stream
+				if idxInst.Defn.Bucket == bucket &&
+					idxInst.Stream == streamId &&
+					idxInst.State != common.INDEX_STATE_DELETED {
+					//for all partitions managed by this indexer
+					for _, partnInst := range partnMap {
+						sc := partnInst.Sc
+
+						// For all slices in the partn
+						for _, slice := range sc.GetAllSlices() {
+							// logging.Infof("amd: Slice setting nextSn")
+							// slice.SetNextSnapshotNumber()
+							slice.ShiftHist()
+						}
+					}
+				}
+			}
+		}
 
 		flusher := NewFlusher(config, stats)
 		sts := getSeqTsFromTsVbuuid(ts)

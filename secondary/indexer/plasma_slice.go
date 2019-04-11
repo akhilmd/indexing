@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"math"
 	"math/rand"
 	"os"
@@ -137,9 +138,13 @@ type plasmaSlice struct {
 	scalingFactor      float64 // scaling factor for percentage increase on drain rate
 	threshold          int     // threshold on number of misses on drain rate
 
+	// snapLock      sync.RWMutex // Prevent IndexMutations due to expiry from being processed during snapshot creation
 	writerLock    sync.Mutex // mutex for writer tuning
 	samplerStopCh chan bool  // stop sampler
 	token         *token     // token
+
+	expiryHistogram *Histogram
+	canPurge        uint32
 }
 
 func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
@@ -197,6 +202,11 @@ func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
 	slice.samplerStopCh = make(chan bool)
 	slice.snapInterval = sysconf["settings.inmemory_snapshot.moi.interval"].Uint64() * uint64(time.Millisecond)
 
+	if slice.idxDefn.TTL > 0 {
+		// shiftInterval must be slightly more than the actual interval which is 10mins
+		slice.expiryHistogram = NewHistogram(60, slice.idxDefn.TTL, 120 + sysconf["settings.persisted_snapshot.moi.interval"].Uint64() / 1e3)
+	}
+
 	if err := slice.initStores(); err != nil {
 		// Index is unusable. Remove the data files and reinit
 		if err == errStorageCorrupted {
@@ -222,7 +232,22 @@ func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
 	return slice, nil
 }
 
+// Generated using the AUTODIN II polynomial based on
+// gocbcore at cbcrc.go and from FreeBSD at src/usr.bin/cksum/crc32.c.
+var crc32Autodin2 *crc32.Table = crc32.MakeTable(0xEDB88320)
+
+// Calculate workerId from the docid by using CRC32 hash
+// CRC32 hash with AUTODIN II table and output right shifted by 16
+// Use (n & (numVbuckets - 1)) instead of (n % numVbuckets) since numVbuckets is power of 2
+func (mdb *plasmaSlice) getWorkerIdFromDocid(docid []byte) int {
+	numVbucketsM1 := uint32(mdb.sysconf["numVbuckets"].Int() - 1)
+	return int((crc32.Checksum(docid, crc32Autodin2)>>16)&numVbucketsM1) % mdb.numWriters
+}
+
 func (slice *plasmaSlice) initStores() error {
+	// pc, _, _, _ := runtime.Caller(1)
+	// details := runtime.FuncForPC(pc)
+	// logging.Infof("amd: initStores called from [%s]", details.Name())
 	var err error
 	cfg := plasma.DefaultConfig()
 	cfg.UseMemoryMgmt = slice.sysconf["plasma.useMemMgmt"].Bool()
@@ -248,6 +273,19 @@ func (slice *plasmaSlice) initStores() error {
 	cfg.MaxPageSize = slice.sysconf["plasma.MaxPageSize"].Int()
 	cfg.AutoLSSCleaning = !slice.sysconf["settings.compaction.plasma.manual"].Bool()
 
+	// With clause gets the TTL in seconds. Convert to milliseconds.
+	cfg.TTL = slice.idxDefn.TTL * 1e3
+
+	// return lastKnownExpiredCount if in the middle of shifting. Know this by checking slice.canPurge
+	cfg.ExpectedExpiredCallback = func() int64 {
+		if cfg.TTL > 0 {
+			qt := uint64(time.Now().Unix()) - slice.idxDefn.TTL
+			// logging.Infof("amd: hist=[%v] qt=[%d]", slice.expiryHistogram, qt)
+			return slice.expiryHistogram.Query(qt)
+		}
+		return 0
+	}
+
 	if slice.numPartitions != 1 {
 		cfg.LSSCleanerConcurrency = 1
 	}
@@ -259,6 +297,13 @@ func (slice *plasmaSlice) initStores() error {
 	} else if slice.sysconf["plasma.useDirectIO"].Bool() {
 		mode = plasma.DirectIO
 	}
+
+	defaultCmdQueueSize := slice.defaultCmdQueueSize()
+	defaultWorkerThresholdLen := uint64(0.6 * float64(defaultCmdQueueSize))
+	thresholdDelta := uint64(0.1 * float64(defaultCmdQueueSize))
+	workerThresholdLen := defaultWorkerThresholdLen
+	var lastSendTime time.Time
+	maxWaitNoSend := time.Duration(10 * time.Minute)
 
 	cfg.IOMode = mode
 
@@ -274,6 +319,37 @@ func (slice *plasmaSlice) initStores() error {
 	mCfg.LSSCleanerThreshold = slice.sysconf["plasma.mainIndex.LSSFragmentation"].Int()
 	mCfg.LSSCleanerMaxThreshold = slice.sysconf["plasma.mainIndex.maxLSSFragmentation"].Int()
 	mCfg.LogPrefix = fmt.Sprintf("%s/%s/Mainstore#%d:%d ", slice.idxDefn.Bucket, slice.idxDefn.Name, slice.idxInstId, slice.idxPartnId)
+	mCfg.ExpiryCallback = func(key []byte, sn uint64) {
+		// Skip purging if snapshotting is in progress
+		if atomic.LoadUint32(&slice.canPurge) == 0 {
+			return
+		}
+		// return
+
+		// logging.Infof("amd: expired-main!!")
+		entry := secondaryIndexEntry(key)
+		docid, _ := entry.ReadDocId([]byte{})
+		workerId := slice.getWorkerIdFromDocid(docid)
+		workerCmdCh := slice.cmdCh[workerId]
+		threshold := atomic.LoadUint64(&workerThresholdLen)
+		if uint64(len(workerCmdCh)) < threshold {
+			// Make sure to setSn before this happens
+			// slice.SetNextSnapshotNumber()
+			workerCmdCh <- indexMutation{op: opDelete, docid: docid, sn: sn}
+			atomic.AddInt64(&slice.qCount, 1)
+			lastSendTime = time.Now()
+
+			// reset to default if changed due to long waiting send
+			atomic.StoreUint64(&workerThresholdLen, defaultWorkerThresholdLen)
+		} else if time.Since(lastSendTime) > maxWaitNoSend {
+			threshold += thresholdDelta
+			if threshold > defaultCmdQueueSize {
+				threshold = defaultCmdQueueSize
+			}
+			atomic.StoreUint64(&workerThresholdLen, threshold)
+			logging.Infof("amd: new threshold = [%d]", threshold)
+		}
+	}
 
 	bCfg.MaxDeltaChainLen = slice.sysconf["plasma.backIndex.maxNumPageDeltas"].Int()
 	bCfg.MaxPageItems = slice.sysconf["plasma.backIndex.pageSplitThreshold"].Int()
@@ -282,6 +358,44 @@ func (slice *plasmaSlice) initStores() error {
 	bCfg.LSSCleanerThreshold = slice.sysconf["plasma.backIndex.LSSFragmentation"].Int()
 	bCfg.LSSCleanerMaxThreshold = slice.sysconf["plasma.backIndex.maxLSSFragmentation"].Int()
 	bCfg.LogPrefix = fmt.Sprintf("%s/%s/Backstore#%d:%d ", slice.idxDefn.Bucket, slice.idxDefn.Name, slice.idxInstId, slice.idxPartnId)
+	bCfg.ExpiryCallback = func(key []byte, sn uint64) {
+		// Skip purging if snapshotting is in progress
+		if atomic.LoadUint32(&slice.canPurge) == 0 {
+			return
+		}
+		// return
+
+		// logging.Infof("amd: expired-back!!")
+		docid := append([]byte{}, key...)
+		workerId := slice.getWorkerIdFromDocid(docid)
+		workerCmdCh := slice.cmdCh[workerId]
+		threshold := atomic.LoadUint64(&workerThresholdLen)
+		if uint64(len(workerCmdCh)) < threshold {
+			workerCmdCh <- indexMutation{op: opDelete, docid: docid, sn: sn}
+			atomic.AddInt64(&slice.qCount, 1)
+			lastSendTime = time.Now()
+
+			// reset to default if changed due to long waiting send
+			atomic.StoreUint64(&workerThresholdLen, defaultWorkerThresholdLen)
+		} else if time.Since(lastSendTime) > maxWaitNoSend {
+			threshold += 10
+			if threshold > defaultCmdQueueSize {
+				threshold = defaultCmdQueueSize
+			}
+			atomic.StoreUint64(&workerThresholdLen, threshold)
+		}
+	}
+
+	// go func () {
+	// 	for {
+	// 		time.Sleep(5 * time.Second)
+	// 		var lens []int
+	// 		for _, v := range slice.cmdCh {
+	// 			lens = append(lens, len(v))
+	// 		}
+	// 		// logging.Infof("amd: qlens = [%v], workerThresholdLen = [%d], since lastSend = [%v]", lens, workerThresholdLen, time.Since(lastSendTime))
+	// 	}
+	// }()
 
 	if slice.hasPersistence {
 		mCfg.File = filepath.Join(slice.path, "mainIndex")
@@ -485,14 +599,20 @@ loop:
 		case icmd = <-mdb.cmdCh[workerId]:
 			switch icmd.op {
 			case opUpdate, opInsert:
+				// logging.Infof("amd: indexName=[%s] Insert [%s]", mdb.idxDefn.Name, icmd.docid)
 				start = time.Now()
+				// mdb.snapLock.RLock()
 				nmut = mdb.insert(icmd.key, icmd.docid, workerId, icmd.op == opInsert, icmd.meta)
+				// mdb.snapLock.RUnlock()
 				elapsed = time.Since(start)
 				mdb.totalFlushTime += elapsed
 
 			case opDelete:
+				// logging.Infof("amd: indexName=[%s] Delete[%d] [%s]", mdb.idxDefn.Name, icmd.sn, icmd.docid)
 				start = time.Now()
-				nmut = mdb.delete(icmd.docid, workerId)
+				// mdb.snapLock.RLock()
+				nmut = mdb.delete(icmd.docid, workerId, icmd.sn)
+				// mdb.snapLock.RUnlock()
 				elapsed = time.Since(start)
 				mdb.totalFlushTime += elapsed
 
@@ -501,8 +621,10 @@ loop:
 					"Unknown Command %v", mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagUD(icmd))
 			}
 
-			mdb.idxStats.numItemsFlushed.Add(int64(nmut))
-			mdb.idxStats.numDocsIndexed.Add(1)
+			if icmd.sn == 0 {
+				mdb.idxStats.numItemsFlushed.Add(int64(nmut))
+				mdb.idxStats.numDocsIndexed.Add(1)
+			}
 			atomic.AddInt64(&mdb.qCount, -1)
 
 			if mdb.enableWriterTuning {
@@ -511,6 +633,7 @@ loop:
 			}
 
 		case _, ok := <-mdb.stopCh[workerId]:
+			// logging.Infof("amd: stopCh")
 			if ok {
 				mdb.stopCh[workerId] <- true
 			}
@@ -530,7 +653,7 @@ func (mdb *plasmaSlice) insert(key []byte, docid []byte, workerId int,
 	if mdb.isPrimary {
 		nmut = mdb.insertPrimaryIndex(key, docid, workerId)
 	} else if len(key) == 0 {
-		nmut = mdb.delete(docid, workerId)
+		nmut = mdb.delete(docid, workerId, 0)
 	} else {
 		if mdb.idxDefn.IsArrayIndex {
 			nmut = mdb.insertSecArrayIndex(key, docid, workerId, init, meta)
@@ -551,7 +674,7 @@ func (mdb *plasmaSlice) insertPrimaryIndex(key []byte, docid []byte, workerId in
 	mdb.main[workerId].Begin()
 	defer mdb.main[workerId].End()
 
-	_, err = mdb.main[workerId].LookupKV(entry)
+	_, _, err = mdb.main[workerId].LookupKV(entry)
 	if err == plasma.ErrItemNotFound {
 		t0 := time.Now()
 		mdb.main[workerId].InsertKV(entry, nil)
@@ -573,7 +696,7 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
-		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId); !changed {
+		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId, 0); !changed {
 			return 0
 		}
 	}
@@ -604,6 +727,12 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 		mdb.idxStats.dataSize.Add(int64(len(docid) + len(backEntry) + len(entry)))
 		addKeySizeStat(mdb.idxStats, len(entry))
 		atomic.AddInt64(&mdb.insert_bytes, int64(len(docid)+len(entry)))
+
+		if mdb.idxDefn.TTL > 0 {
+			t := uint64(time.Now().Unix())
+			// logging.Infof("amd: I [%d] d [%s]", t, docid)
+			mdb.expiryHistogram.Insert(t)
+		}
 	}
 
 	mdb.isDirty = true
@@ -620,7 +749,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 	if !allowLargeKeys && len(key) > maxArrayIndexEntrySize {
 		logging.Errorf("plasmaSlice::insertSecArrayIndex Error indexing docid: %s in Slice: %v. Error: Encoded array key (size %v) too long (> %v). Skipped.",
 			logging.TagStrUD(docid), mdb.id, len(key), maxArrayIndexEntrySize)
-		mdb.deleteSecArrayIndex(docid, workerId)
+		mdb.deleteSecArrayIndex(docid, workerId, 0)
 		return 0
 	}
 
@@ -631,7 +760,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
-		oldkey, err = mdb.back[workerId].LookupKV(docid)
+		oldkey, _, err = mdb.back[workerId].LookupKV(docid)
 		if err == plasma.ErrItemNotFound {
 			oldkey = nil
 		}
@@ -665,7 +794,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error in retrieving "+
 				"compostite old secondary keys. Skipping docid:%s Error: %v",
 				mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-			mdb.deleteSecArrayIndexNoTx(docid, workerId)
+			mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 			return 0
 		}
 	}
@@ -679,7 +808,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error in creating "+
 				"compostite new secondary keys. Skipping docid:%s Error: %v",
 				mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-			mdb.deleteSecArrayIndexNoTx(docid, workerId)
+			mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 			return 0
 		}
 	}
@@ -692,7 +821,11 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 		indexEntriesToBeAdded = nil
 		indexEntriesToBeDeleted = oldEntriesBytes
 	} else {
-		indexEntriesToBeAdded, indexEntriesToBeDeleted = CompareArrayEntriesWithCount(newEntriesBytes, oldEntriesBytes, newKeyCount, oldKeyCount)
+		if mdb.idxDefn.TTL > 0 {
+			indexEntriesToBeAdded, indexEntriesToBeDeleted = newEntriesBytes, oldEntriesBytes
+		} else {
+			indexEntriesToBeAdded, indexEntriesToBeDeleted = CompareArrayEntriesWithCount(newEntriesBytes, oldEntriesBytes, newKeyCount, oldKeyCount)
+		}
 	}
 
 	nmut = 0
@@ -739,7 +872,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 				logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error forming entry "+
 					"to be added to main index. Skipping docid:%s Error: %v",
 					mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-				mdb.deleteSecArrayIndexNoTx(docid, workerId)
+				mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 				return 0
 			}
 			keyDelSz := len(keyToBeDeleted)
@@ -767,7 +900,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 				logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error forming entry "+
 					"to be added to main index. Skipping docid:%s Error: %v",
 					mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-				mdb.deleteSecArrayIndexNoTx(docid, workerId)
+				mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 				return 0
 			}
 
@@ -829,15 +962,15 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 	return nmut
 }
 
-func (mdb *plasmaSlice) delete(docid []byte, workerId int) int {
+func (mdb *plasmaSlice) delete(docid []byte, workerId int, sn uint64) int {
 	var nmut int
 
 	if mdb.isPrimary {
 		nmut = mdb.deletePrimaryIndex(docid, workerId)
 	} else if !mdb.idxDefn.IsArrayIndex {
-		nmut, _ = mdb.deleteSecIndex(docid, nil, workerId)
+		nmut, _ = mdb.deleteSecIndex(docid, nil, workerId, sn)
 	} else {
-		nmut = mdb.deleteSecArrayIndex(docid, workerId)
+		nmut = mdb.deleteSecArrayIndex(docid, workerId, sn)
 	}
 
 	mdb.logWriterStat()
@@ -861,7 +994,7 @@ func (mdb *plasmaSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int
 	mdb.main[workerId].Begin()
 	defer mdb.main[workerId].End()
 
-	if _, err := mdb.main[workerId].LookupKV(entry); err == plasma.ErrItemNoValue {
+	if _, _, err := mdb.main[workerId].LookupKV(entry); err == plasma.ErrItemNoValue {
 		mdb.main[workerId].DeleteKV(itm)
 		mdb.idxStats.Timings.stKVDelete.Put(time.Now().Sub(t0))
 
@@ -875,13 +1008,15 @@ func (mdb *plasmaSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int
 	return 0
 }
 
-func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId int) (ndel int, changed bool) {
+func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId int, sn uint64) (ndel int, changed bool) {
 
 	// Delete entry from back and main index if present
 	mdb.back[workerId].Begin()
 	defer mdb.back[workerId].End()
 
-	backEntry, err := mdb.back[workerId].LookupKV(docid)
+	// logging.Infof("amd: deleteSecIndex [%s][%d] Back.LookupKV", docid, sn)
+	backEntry, entrySn, err := mdb.back[workerId].LookupKV(docid)
+	// logging.Infof("amd: deleteSecIndex [%s][%d] Back.LookupKV-END[%s]", docid, sn, backEntry)
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(backEntry), true)
 	buf := mdb.encodeBuf[workerId]
 
@@ -891,27 +1026,39 @@ func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId
 			return 0, false
 		}
 
+		if sn > 0 && sn != entrySn {
+			return 0, false
+		}
+
 		t0 := time.Now()
 		atomic.AddInt64(&mdb.delete_bytes, int64(len(docid)))
 		mdb.main[workerId].Begin()
 		defer mdb.main[workerId].End()
+		// logging.Infof("amd: deleteSecIndex [%s][%d] Back.DeleteKV", docid, sn)
 		mdb.back[workerId].DeleteKV(docid)
 		mdb.idxStats.backstoreDataSize.Add(0 - int64(len(docid)+len(backEntry)))
 
 		entry := backEntry2entry(docid, backEntry, buf)
 		entrySz := len(entry)
+		// logging.Infof("amd: deleteSecIndex [%s][%d] Main.DeleteKV[%s]", docid, sn, entry)
 		mdb.main[workerId].DeleteKV(entry)
 		mdb.idxStats.Timings.stKVDelete.Put(time.Since(t0))
 
 		mdb.idxStats.dataSize.Add(0 - int64(len(docid)+len(backEntry)+entrySz))
 		subtractKeySizeStat(mdb.idxStats, entrySz)
+
+		if mdb.idxDefn.TTL > 0 {
+			_, insertTime := plasma.DecodeTTLSn(entrySn)
+			// logging.Infof("amd: D [%d] d [%s] r [%v]", insertTime / 1e3, docid, 
+			mdb.expiryHistogram.Delete((insertTime / 1e3))
+		}
 	}
 
 	mdb.isDirty = true
 	return 1, true
 }
 
-func (mdb *plasmaSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut int) {
+func (mdb *plasmaSlice) deleteSecArrayIndex(docid []byte, workerId int, sn uint64) (nmut int) {
 
 	mdb.back[workerId].Begin()
 	defer mdb.back[workerId].End()
@@ -919,14 +1066,17 @@ func (mdb *plasmaSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut in
 	mdb.main[workerId].Begin()
 	defer mdb.main[workerId].End()
 
-	return mdb.deleteSecArrayIndexNoTx(docid, workerId)
+	return mdb.deleteSecArrayIndexNoTx(docid, workerId, sn)
 }
 
-func (mdb *plasmaSlice) deleteSecArrayIndexNoTx(docid []byte, workerId int) (nmut int) {
+func (mdb *plasmaSlice) deleteSecArrayIndexNoTx(docid []byte, workerId int, sn uint64) (nmut int) {
 	var olditm []byte
 	var err error
 
-	olditm, err = mdb.back[workerId].LookupKV(docid)
+	olditm, entrySn, err := mdb.back[workerId].LookupKV(docid)
+	if sn > 0 && sn != entrySn {
+		return 0
+	}
 	if err == plasma.ErrItemNotFound {
 		olditm = nil
 	}
@@ -1027,6 +1177,8 @@ type plasmaSnapshotInfo struct {
 	Version    int
 	InstId     common.IndexInstId
 	PartnId    common.PartitionId
+
+	ExpiryHistogram *Histogram
 }
 
 type plasmaSnapshot struct {
@@ -1045,12 +1197,22 @@ type plasmaSnapshot struct {
 	refCount int32
 }
 
+// func (mdb *plasmaSlice) SetNextSnapshotNumber() {
+// 	now := plasma.NowUnixMillis()
+// 	mdb.mainstore.SetNextSn(now)
+
+// 	if !mdb.isPrimary {
+// 		mdb.backstore.SetNextSn(now)
+// 	}
+// }
+
 // Creates an open snapshot handle from snapshot info
 // Snapshot info is obtained from NewSnapshot() or GetSnapshots() API
 // Returns error if snapshot handle cannot be created.
 func (mdb *plasmaSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 	snapInfo := info.(*plasmaSnapshotInfo)
 
+	// mdb.snapLock.Lock()
 	s := &plasmaSnapshot{slice: mdb,
 		idxDefnId:  mdb.idxDefnId,
 		idxInstId:  mdb.idxInstId,
@@ -1063,7 +1225,13 @@ func (mdb *plasmaSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 
 	if !mdb.isPrimary {
 		s.BackSnap = mdb.backstore.NewSnapshot()
+		// if s.MainSnap.Sn() != s.BackSnap.Sn() {
+		// 	logging.Infof("amd: WRONG! [%d]!=[%d]", s.MainSnap.Sn(), s.BackSnap.Sn())
+		// } else {
+		// 	logging.Infof("amd: OK [%d]!=[%d]", s.MainSnap.Sn(), s.BackSnap.Sn())
+		// }
 	}
+	// mdb.snapLock.Unlock()
 
 	s.Open()
 	s.slice.IncrRef()
@@ -1084,6 +1252,17 @@ func (mdb *plasmaSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 
 var plasmaPersistenceMutex sync.Mutex
 
+func (mdb *plasmaSlice) ShiftHist() {
+	if mdb.idxDefn.TTL > 0 {
+		if time.Since(mdb.expiryHistogram.GetLastShiftTime()) > time.Duration(mdb.sysconf["settings.persisted_snapshot.moi.interval"].Uint64()) * time.Millisecond {
+			logging.Infof("amd: hist pre-shift: [%v] since=[%v]", mdb.expiryHistogram, time.Since(mdb.expiryHistogram.GetLastShiftTime()))
+			mdb.expiryHistogram.Shift()
+			mdb.expiryHistogram.SetLastShiftTime(time.Now())
+			logging.Infof("amd: hist shifted: [%v]", mdb.expiryHistogram)
+		}
+	}
+}
+
 func (mdb *plasmaSlice) doPersistSnapshot(s *plasmaSnapshot) {
 	if atomic.CompareAndSwapInt32(&mdb.isPersistorActive, 0, 1) {
 		s.MainSnap.Open()
@@ -1094,7 +1273,7 @@ func (mdb *plasmaSlice) doPersistSnapshot(s *plasmaSnapshot) {
 		go func() {
 			defer atomic.StoreInt32(&mdb.isPersistorActive, 0)
 
-			logging.Infof("PlasmaSlice Slice Id %v, IndexInstId %v, PartitionId %v Creating recovery point ...", mdb.id, mdb.idxInstId, mdb.idxPartnId)
+			logging.Infof("amd: DPS PlasmaSlice Slice Id %v, IndexInstId %v, PartitionId %v Creating recovery point ...", mdb.id, mdb.idxInstId, mdb.idxPartnId)
 			t0 := time.Now()
 
 			snapshotStats := make(map[string]interface{})
@@ -1107,6 +1286,10 @@ func (mdb *plasmaSlice) doPersistSnapshot(s *plasmaSnapshot) {
 			s.info.Version = SNAPSHOT_META_VERSION_PLASMA_1
 			s.info.InstId = mdb.idxInstId
 			s.info.PartnId = mdb.idxPartnId
+
+			if mdb.idxDefn.TTL > 0 {
+				s.info.ExpiryHistogram = mdb.expiryHistogram
+			}
 
 			meta, err := json.Marshal(s.info)
 			common.CrashOnError(err)
@@ -1246,6 +1429,7 @@ func (mdb *plasmaSlice) GetSnapshots() ([]SnapshotInfo, error) {
 			}
 			info.Ts = snapInfo.Ts
 			info.IndexStats = snapInfo.IndexStats
+			info.ExpiryHistogram = snapInfo.ExpiryHistogram
 		} else {
 			// old format
 			if err := json.Unmarshal(info.mRP.Meta()[8:], &info.Ts); err != nil {
@@ -1264,7 +1448,7 @@ func (mdb *plasmaSlice) GetSnapshots() ([]SnapshotInfo, error) {
 }
 
 func (mdb *plasmaSlice) setCommittedCount() {
-	curr := mdb.mainstore.ItemsCount()
+	curr := mdb.mainstore.AppliedItemsCount()
 	atomic.StoreUint64(&mdb.committedCount, uint64(curr))
 }
 
@@ -1332,10 +1516,11 @@ func (mdb *plasmaSlice) restore(o SnapshotInfo) error {
 	var mErr, bErr error
 	info := o.(*plasmaSnapshotInfo)
 	wg.Add(1)
+	now := plasma.NowUnixMillis()
 	go func() {
 		defer wg.Done()
 		var s *plasma.Snapshot
-		if s, mErr = mdb.mainstore.Rollback(info.mRP); mErr == nil {
+		if s, mErr = mdb.mainstore.Rollback(info.mRP, now); mErr == nil {
 			s.Close()
 		}
 	}()
@@ -1346,7 +1531,7 @@ func (mdb *plasmaSlice) restore(o SnapshotInfo) error {
 		go func() {
 			defer wg.Done()
 			var s *plasma.Snapshot
-			if s, bErr = mdb.backstore.Rollback(info.bRP); bErr == nil {
+			if s, bErr = mdb.backstore.Rollback(info.bRP, now); bErr == nil {
 				s.Close()
 			}
 		}()
@@ -1360,6 +1545,9 @@ func (mdb *plasmaSlice) restore(o SnapshotInfo) error {
 
 	// Update stats available in snapshot info
 	mdb.updateStatsFromSnapshotMeta(o)
+
+	mdb.expiryHistogram = o.GetExpiryHistogram()
+	logging.Infof("amd: restored histogram = [%v]", mdb.expiryHistogram)
 	return nil
 }
 
@@ -1416,12 +1604,22 @@ func (mdb *plasmaSlice) LastRollbackTs() *common.TsVbuuid {
 	return mdb.lastRollbackTs
 }
 
+func (mdb *plasmaSlice) PausePurger() {
+	atomic.StoreUint32(&mdb.canPurge, 0)
+}
+
+func (mdb *plasmaSlice) ResumePurger() {
+	atomic.StoreUint32(&mdb.canPurge, 1)
+}
+
 //slice insert/delete methods are async. There
 //can be outstanding mutations in internal queue to flush even
 //after insert/delete have return success to caller.
 //This method provides a mechanism to wait till internal
 //queue is empty.
 func (mdb *plasmaSlice) waitPersist() {
+	// Prevent TTL purger from adding items into the queues
+	mdb.PausePurger()
 
 	if !mdb.checkAllWorkersDone() {
 		//every SLICE_COMMIT_POLL_INTERVAL milliseconds,
@@ -1450,6 +1648,7 @@ func (mdb *plasmaSlice) NewSnapshot(ts *common.TsVbuuid, commit bool) (SnapshotI
 
 	qc := atomic.LoadInt64(&mdb.qCount)
 	if qc > 0 {
+		logging.Infof("amd: NewSnashot qc=[%d]", qc)
 		common.CrashOnError(errors.New("Slice Invariant Violation - commit with pending mutations"))
 	}
 
@@ -1474,6 +1673,7 @@ func (mdb *plasmaSlice) FlushDone() {
 
 	qc := atomic.LoadInt64(&mdb.qCount)
 	if qc > 0 {
+		logging.Infof("amd: FlushDone qc=[%d]", qc)
 		common.CrashOnError(errors.New("Slice Invariant Violation - commit with pending mutations"))
 	}
 
@@ -1824,6 +2024,10 @@ func (info *plasmaSnapshotInfo) Stats() map[string]interface{} {
 	return info.IndexStats
 }
 
+func (info *plasmaSnapshotInfo) GetExpiryHistogram() *Histogram {
+	return info.ExpiryHistogram
+}
+
 func (info *plasmaSnapshotInfo) String() string {
 	return fmt.Sprintf("SnapshotInfo: count:%v committed:%v", info.Count, info.Committed)
 }
@@ -1910,6 +2114,7 @@ func (s *plasmaSnapshot) Info() SnapshotInfo {
 
 // Approximate items count
 func (s *plasmaSnapshot) StatCountTotal() (uint64, error) {
+	s.slice.setCommittedCount()
 	c := s.slice.GetCommittedCount()
 	return c, nil
 }
@@ -2079,6 +2284,7 @@ func (s *plasmaSnapshot) All(ctx IndexReaderContext, callb EntryCallback) error 
 
 func (s *plasmaSnapshot) Iterate(ctx IndexReaderContext, low, high IndexKey, inclusion Inclusion,
 	cmpFn CmpEntry, callback EntryCallback) error {
+	logging.Infof("amd: Iterate - [%s] low=[%v], high=[%v], incl=[%v]", s.slice.idxDefn.Name, low, high, inclusion)
 	var entry IndexEntry
 	var err error
 	t0 := time.Now()
@@ -2301,6 +2507,7 @@ func (slice *plasmaSlice) initWriters(numWriters int) {
 
 	// initialize command handler
 	queueSize := slice.defaultCmdQueueSize()
+	logging.Infof("amd: queueSize = [%d]", queueSize)
 	slice.cmdCh = slice.cmdCh[:numWriters]
 	slice.workerDone = slice.workerDone[:numWriters]
 	slice.stopCh = slice.stopCh[:numWriters]
@@ -2914,4 +3121,82 @@ func deleteFreeWriters(instId common.IndexInstId) {
 	freeWriters.mutex.Lock()
 	defer freeWriters.mutex.Unlock()
 	delete(freeWriters.tokens, instId)
+}
+
+type Histogram struct {
+	// Bins is an array of counts
+	// the index of the bin represents the lower bound of time.
+	Bins []int64
+
+	TTL           uint64
+	ShiftInterval uint64
+	BaseTime      uint64
+	BinSize       uint64
+
+	// no. of items expired on on before baseTime
+	ExpiredCount int64
+
+	lastShiftTime time.Time
+}
+
+func NewHistogram(binSize, ttl, shiftInterval uint64) *Histogram {
+	return &Histogram{
+		BaseTime:      uint64(time.Now().Unix()) - ttl,
+		BinSize:       binSize,
+		Bins:          make([]int64, (ttl+shiftInterval)/binSize),
+		TTL:           ttl,
+		ShiftInterval: shiftInterval,
+	}
+}
+
+func (hist *Histogram) Shift() {
+	hist.BaseTime = uint64(time.Now().Unix()) - hist.TTL
+
+	cutoff := hist.ShiftInterval / hist.BinSize
+	for _, v := range hist.Bins[:cutoff] {
+		hist.ExpiredCount += v
+	}
+	hist.Bins = append(hist.Bins[cutoff:], make([]int64, cutoff)...)
+}
+
+func (hist *Histogram) GetLastShiftTime() time.Time {
+	return hist.lastShiftTime
+}
+
+func (hist *Histogram) SetLastShiftTime(t time.Time) {
+	hist.lastShiftTime = t
+}
+
+func (hist *Histogram) Insert(inTime uint64) {
+	ind := int((inTime - hist.BaseTime) / hist.BinSize)
+	atomic.AddInt64(&hist.Bins[ind], 1)
+}
+
+func (hist *Histogram) Delete(inTime uint64) {
+	if inTime < hist.BaseTime {
+		atomic.AddInt64(&hist.ExpiredCount, -1)
+	} else {
+		ind := int((inTime - hist.BaseTime) / hist.BinSize)
+		binsLen := len(hist.Bins)
+
+		if ind >= binsLen {
+			fmt.Println("amd: invalid delete")
+			return
+		}
+
+		atomic.AddInt64(&hist.Bins[ind], -1)
+	}
+}
+
+func (hist *Histogram) Query(qTime uint64) (result int64) {
+	if qTime >= hist.BaseTime {
+		result += atomic.LoadInt64(&hist.ExpiredCount)
+
+		for i := 0; i < len(hist.Bins); i++ {
+			if qTime >= hist.BaseTime+uint64(i+1)*hist.BinSize {
+				result += atomic.LoadInt64(&hist.Bins[i])
+			}
+		}
+	}
+	return
 }

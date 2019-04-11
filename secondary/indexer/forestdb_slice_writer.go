@@ -913,6 +913,9 @@ func (fdb *fdbSlice) checkFatalDbError(err error) {
 
 }
 
+func (mdb *fdbSlice) ShiftHist() { }
+// func (mdb *fdbSlice) SetNextSnapshotNumber() { }
+
 // Creates an open snapshot handle from snapshot info
 // Snapshot info is obtained from NewSnapshot() or GetSnapshots() API
 // Returns error if snapshot handle cannot be created.
@@ -1083,6 +1086,9 @@ func (fdb *fdbSlice) RollbackToZero() error {
 func (fdb *fdbSlice) LastRollbackTs() *common.TsVbuuid {
 	return fdb.lastRollbackTs
 }
+
+func (mdb *fdbSlice) PausePurger() { }
+func (mdb *fdbSlice) ResumePurger() { }
 
 //slice insert/delete methods are async. There
 //can be outstanding mutations in internal queue to flush even

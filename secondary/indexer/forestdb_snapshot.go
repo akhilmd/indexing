@@ -44,6 +44,10 @@ func (info *fdbSnapshotInfo) Stats() map[string]interface{} {
 	return info.stats
 }
 
+func (info *fdbSnapshotInfo) GetExpiryHistogram() *Histogram {
+	return nil
+}
+
 func (info *fdbSnapshotInfo) String() string {
 	return fmt.Sprintf("SnapshotInfo: seqnos: %v, %v, %v committed:%v", info.MainSeq,
 		info.BackSeq, info.MetaSeq, info.Committed)

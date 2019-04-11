@@ -518,11 +518,13 @@ func GetIndex(
 	}
 	for _, index := range indexes {
 		defn := index.Definition
+		fmt.Printf("%s, ", defn.Name)
 		if defn.Bucket == bucket && defn.Name == indexName {
 			return index, true
 			//return uint64(index.Definition.DefnId), true
 		}
 	}
+	fmt.Println()
 	return nil, false
 }
 

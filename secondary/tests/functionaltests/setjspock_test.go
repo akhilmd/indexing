@@ -316,7 +316,7 @@ func TestMultiScanPrimaryIndex(t *testing.T) {
 
 	var index4 = "index_primary"
 	runMultiScanForPrimaryIndex(index4, getPrimaryRange(), false, false, nil, 0, defaultlimit, true, false, "PrimaryRange", t)
-	runMultiScanForPrimaryIndex(index4, getScanAllNoFilter(), false, false, nil, 0, defaultlimit, true, false, "PrimaryScanAllNoFilter", t)
+	// runMultiScanForPrimaryIndex(index4, getScanAllNoFilter(), false, false, nil, 0, defaultlimit, true, false, "PrimaryScanAllNoFilter", t)
 }
 
 func TestMultiScanDistinct(t *testing.T) {
