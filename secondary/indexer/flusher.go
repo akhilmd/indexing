@@ -436,6 +436,9 @@ func (f *flusher) processUpsert(mut *Mutation, docid []byte, meta *MutationMeta)
 
 	if partnInst, ok := partnInstMap[partnId]; ok {
 		slice := partnInst.Sc.GetSliceByIndexKey(common.IndexKey(mut.key))
+		if isSnSet := slice.IsSnSet(); !isSnSet {
+			slice.SetNextSnapshotNumber()
+		}
 		if err := slice.Insert(mut.key, docid, meta); err != nil {
 			logging.Errorf("Flusher::processUpsert Error indexing Key: %s "+
 				"docid: %s in Slice: %v. Error: %v. Skipped.",
@@ -467,6 +470,9 @@ func (f *flusher) processDelete(mut *Mutation, docid []byte, meta *MutationMeta)
 
 	for _, partnInst := range partnInstMap {
 		slice := partnInst.Sc.GetSliceByIndexKey(common.IndexKey(mut.key))
+		if isSnSet := slice.IsSnSet(); !isSnSet {
+			slice.SetNextSnapshotNumber()
+		}
 		if err := slice.Delete(docid, meta); err != nil {
 			logging.Errorf("Flusher::processDelete Error Deleting DocId: %v "+
 				"from Slice: %v", logging.TagStrUD(docid), slice.Id())
@@ -495,6 +501,9 @@ func (f *flusher) processDeletionAfterUpsert(mut *Mutation, docid []byte, meta *
 		// perform upsert deletion on "other" partitions
 		if id != partnId {
 			slice := partnInst.Sc.GetSliceByIndexKey(common.IndexKey(mut.key))
+			if isSnSet := slice.IsSnSet(); !isSnSet {
+				slice.SetNextSnapshotNumber()
+			}
 			if err := slice.Delete(docid, meta); err != nil {
 				logging.Errorf("Flusher::processDelete Error Deleting DocId: %v "+
 					"from Slice: %v", docid, slice.Id())

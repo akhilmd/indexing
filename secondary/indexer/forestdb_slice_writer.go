@@ -913,6 +913,13 @@ func (fdb *fdbSlice) checkFatalDbError(err error) {
 
 }
 
+func (mdb *fdbSlice) SetNextSnapshotNumber() {
+}
+
+func (mdb *fdbSlice) IsSnSet() bool {
+	return true
+}
+
 // Creates an open snapshot handle from snapshot info
 // Snapshot info is obtained from NewSnapshot() or GetSnapshots() API
 // Returns error if snapshot handle cannot be created.

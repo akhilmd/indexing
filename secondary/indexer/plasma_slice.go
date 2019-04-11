@@ -140,6 +140,8 @@ type plasmaSlice struct {
 	writerLock    sync.Mutex // mutex for writer tuning
 	samplerStopCh chan bool  // stop sampler
 	token         *token     // token
+
+	isSnSet bool
 }
 
 func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
@@ -247,6 +249,8 @@ func (slice *plasmaSlice) initStores() error {
 	cfg.Compression = slice.sysconf["plasma.compression"].String()
 	cfg.MaxPageSize = slice.sysconf["plasma.MaxPageSize"].Int()
 	cfg.AutoLSSCleaning = !slice.sysconf["settings.compaction.plasma.manual"].Bool()
+
+	cfg.TTL = 30 * 1000
 
 	if slice.numPartitions != 1 {
 		cfg.LSSCleanerConcurrency = 1
@@ -975,6 +979,20 @@ type plasmaSnapshot struct {
 	refCount int32
 }
 
+func (mdb *plasmaSlice) SetNextSnapshotNumber() {
+	mdb.mainstore.SetNextSn()
+
+	if !mdb.isPrimary {
+		mdb.backstore.SetNextSn()
+	}
+
+	mdb.isSnSet = true
+}
+
+func (mdb *plasmaSlice) IsSnSet() bool {
+	return mdb.isSnSet
+}
+
 // Creates an open snapshot handle from snapshot info
 // Snapshot info is obtained from NewSnapshot() or GetSnapshots() API
 // Returns error if snapshot handle cannot be created.
@@ -1007,6 +1025,8 @@ func (mdb *plasmaSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 			"Snapshot %v", mdb.id, mdb.idxInstId, mdb.idxPartnId, snapInfo)
 	}
 	mdb.setCommittedCount()
+
+	mdb.isSnSet = false
 
 	return s, nil
 }
