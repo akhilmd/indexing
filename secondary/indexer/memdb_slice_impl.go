@@ -711,6 +711,9 @@ type memdbSnapshot struct {
 	refCount int32
 }
 
+func (mdb *memdbSlice) SetNextSnapshotNumber() {
+}
+
 // Creates an open snapshot handle from snapshot info
 // Snapshot info is obtained from NewSnapshot() or GetSnapshots() API
 // Returns error if snapshot handle cannot be created.
