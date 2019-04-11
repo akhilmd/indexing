@@ -248,6 +248,8 @@ func (slice *plasmaSlice) initStores() error {
 	cfg.MaxPageSize = slice.sysconf["plasma.MaxPageSize"].Int()
 	cfg.AutoLSSCleaning = !slice.sysconf["settings.compaction.plasma.manual"].Bool()
 
+	cfg.TTL = 30 * 1000
+
 	if slice.numPartitions != 1 {
 		cfg.LSSCleanerConcurrency = 1
 	}
@@ -973,6 +975,14 @@ type plasmaSnapshot struct {
 	committed bool
 
 	refCount int32
+}
+
+func (mdb *plasmaSlice) SetNextSnapshotNumber() {
+	mdb.mainstore.SetNextSn()
+
+	if !mdb.isPrimary {
+		mdb.backstore.SetNextSn()
+	}
 }
 
 // Creates an open snapshot handle from snapshot info
