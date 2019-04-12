@@ -205,6 +205,7 @@ type IndexDefn struct {
 	Immutable          bool       `json:"immutable,omitempty"`
 	Nodes              []string   `json:"nodes,omitempty"`
 	IsArrayIndex       bool       `json:"isArrayIndex,omitempty"`
+	TTL                uint64     `json:"ttl,omitempty"`
 	NumReplica         uint32     `json:"numReplica,omitempty"`
 	PartitionKeys      []string   `json:"partitionKeys,omitempty"`
 	RetainDeletedXATTR bool       `json:"retainDeletedXATTR,omitempty"`
@@ -257,6 +258,7 @@ func (idx IndexDefn) String() string {
 	str += fmt.Sprintf("Bucket: %v ", idx.Bucket)
 	str += fmt.Sprintf("IsPrimary: %v ", idx.IsPrimary)
 	str += fmt.Sprintf("NumReplica: %v ", idx.NumReplica)
+	str += fmt.Sprintf("TTL: %v ", idx.TTL)
 	str += fmt.Sprintf("InstVersion: %v ", idx.InstVersion)
 	str += fmt.Sprintf("\n\t\tSecExprs: %v ", logging.TagUD(idx.SecExprs))
 	str += fmt.Sprintf("\n\t\tDesc: %v", idx.Desc)
@@ -290,6 +292,7 @@ func (idx IndexDefn) Clone() *IndexDefn {
 		Immutable:          idx.Immutable,
 		Nodes:              idx.Nodes,
 		IsArrayIndex:       idx.IsArrayIndex,
+		TTL:                idx.TTL,
 		NumReplica:         idx.NumReplica,
 		RetainDeletedXATTR: idx.RetainDeletedXATTR,
 		NumDoc:             idx.NumDoc,

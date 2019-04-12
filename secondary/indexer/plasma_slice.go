@@ -248,7 +248,8 @@ func (slice *plasmaSlice) initStores() error {
 	cfg.MaxPageSize = slice.sysconf["plasma.MaxPageSize"].Int()
 	cfg.AutoLSSCleaning = !slice.sysconf["settings.compaction.plasma.manual"].Bool()
 
-	cfg.TTL = 30 * 1000
+	// With clause gets the TTL in seconds. Convert to milliseconds.
+	cfg.TTL = slice.idxDefn.TTL * 1e3
 
 	if slice.numPartitions != 1 {
 		cfg.LSSCleanerConcurrency = 1
