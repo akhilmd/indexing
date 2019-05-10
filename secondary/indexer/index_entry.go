@@ -58,6 +58,7 @@ type IndexEntry interface {
 	ReadDocId([]byte) ([]byte, error)
 	ReadSecKey([]byte) ([]byte, error)
 	Count() int
+	Expiry() uint32
 	Bytes() []byte
 	String() string
 }
@@ -104,6 +105,10 @@ func (e *primaryIndexEntry) Count() int {
 	return 1
 }
 
+func (e *primaryIndexEntry) Expiry() uint32 {
+	return 0
+}
+
 func (e *primaryIndexEntry) Bytes() []byte {
 	return []byte(*e)
 }
@@ -114,17 +119,18 @@ func (e *primaryIndexEntry) String() string {
 
 // Storage encoding for secondary index entry
 // Format:
-// [collate_json_encoded_sec_key][raw_docid_bytes][optional_count_2_bytes][len_of_docid_2_bytes]
+// [collate_json_encoded_sec_key][raw_docid_bytes][optional_expiry_4_bytes][optional_count_2_bytes][len_of_docid_2_bytes]
 // The MSB of right byte of docid length indicates whether count is encoded or not
+// The 2nd MSB of right byte of docid length indicates whether expiry is encoded or not
 type secondaryIndexEntry []byte
 
 func NewSecondaryIndexEntry(key []byte, docid []byte, isArray bool, count int,
-	desc []bool, buf []byte, meta *MutationMeta) (secondaryIndexEntry, error) {
-	return NewSecondaryIndexEntry2(key, docid, isArray, count, desc, buf, true, meta)
+	expiry uint32, desc []bool, buf []byte, meta *MutationMeta) (secondaryIndexEntry, error) {
+	return NewSecondaryIndexEntry2(key, docid, isArray, count, expiry, desc, buf, true, meta)
 }
 
 func NewSecondaryIndexEntry2(key []byte, docid []byte, isArray bool,
-	count int, desc []bool, buf []byte, validateSize bool, meta *MutationMeta) (secondaryIndexEntry, error) {
+	count int, expiry uint32, desc []bool, buf []byte, validateSize bool, meta *MutationMeta) (secondaryIndexEntry, error) {
 	var err error
 	var offset int
 
@@ -173,6 +179,12 @@ func NewSecondaryIndexEntry2(key []byte, docid []byte, isArray bool,
 
 	buf = append(buf, docid...)
 
+	if expiry > 0 {
+		buf = buf[:len(buf)+4]
+		offset = len(buf) - 4
+		binary.LittleEndian.PutUint32(buf[offset:offset+4], expiry)
+	}
+
 	if count > 1 {
 		buf = buf[:len(buf)+2]
 		offset = len(buf) - 2
@@ -184,6 +196,9 @@ func NewSecondaryIndexEntry2(key []byte, docid []byte, isArray bool,
 	binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(docid)))
 	if count > 1 {
 		buf[offset+1] |= byte(uint8(1) << 7)
+	}
+	if expiry > 0 {
+		buf[offset+1] |= 0x40
 	}
 
 	e := secondaryIndexEntry(buf)
@@ -199,15 +214,26 @@ func (e *secondaryIndexEntry) lenDocId() int {
 	rbuf := []byte(*e)
 	offset := len(rbuf) - 2
 	l := binary.LittleEndian.Uint16(rbuf[offset : offset+2])
-	len := l & 0x7fff // Length & 0111111 11111111 (as MSB of length is used to indicate presence of count)
+
+	// Length & 00111111 11111111 (as MSB and 2nd MSB of length is used to indicate presence of count and expiry)
+	len := l & 0x3fff
 	return int(len)
 }
 
 func (e *secondaryIndexEntry) lenKey() int {
-	if e.isCountEncoded() == true {
-		return len(*e) - e.lenDocId() - 4
+	// subtract docid and the len of docid
+	keyLen := len(*e) - e.lenDocId() - 2
+
+	// if count is encoded, subtract another 2 bytes
+	if e.isCountEncoded() {
+		keyLen -= 2
 	}
-	return len(*e) - e.lenDocId() - 2
+
+	// if expiry is encoded, subtract another 4 bytes
+	if e.isExpiryEncoded() {
+		keyLen -= 4
+	}
+	return keyLen
 }
 
 func (e *secondaryIndexEntry) isCountEncoded() bool {
@@ -216,15 +242,16 @@ func (e *secondaryIndexEntry) isCountEncoded() bool {
 	return (rbuf[offset] & 0x80) == 0x80
 }
 
+func (e *secondaryIndexEntry) isExpiryEncoded() bool {
+	rbuf := []byte(*e)
+	offset := len(rbuf) - 1 // Decode length byte to see if expiry is encoded
+	return (rbuf[offset] & 0x40) == 0x40
+}
+
 func (e secondaryIndexEntry) ReadDocId(buf []byte) ([]byte, error) {
 	docidlen := e.lenDocId()
-	var offset int
-	if e.isCountEncoded() == true {
-		offset = len(e) - docidlen - 4
-	} else {
-		offset = len(e) - docidlen - 2
-	}
-	buf = append(buf, e[offset:offset+docidlen]...)
+	keyLen := e.lenKey()
+	buf = append(buf, e[keyLen:keyLen+docidlen]...)
 	return buf, nil
 }
 
@@ -239,15 +266,26 @@ func (e secondaryIndexEntry) Count() int {
 	}
 }
 
+func (e secondaryIndexEntry) Expiry() uint32 {
+	rbuf := []byte(e)
+
+	if e.isExpiryEncoded() {
+		offset := len(rbuf) - 6
+
+		if e.isCountEncoded() {
+			offset -= 2
+		}
+
+		return uint32(binary.LittleEndian.Uint32(rbuf[offset : offset+4]))
+	}
+	return 0
+}
+
 func (e secondaryIndexEntry) ReadSecKey(buf []byte) ([]byte, error) {
 	var err error
 	var encoded []byte
-	doclen := e.lenDocId()
-	if e.isCountEncoded() {
-		encoded = e[0 : len(e)-doclen-4]
-	} else {
-		encoded = e[0 : len(e)-doclen-2]
-	}
+	keyLen := e.lenKey()
+	encoded = e[:keyLen]
 
 	if buf, err = jsonEncoder.Decode(encoded, buf); err != nil {
 		return nil, err
@@ -482,12 +520,12 @@ func IndexEntrySize(key []byte, docid []byte) int {
 
 // Return encoded key with docid without size check
 func GetIndexEntryBytes3(key []byte, docid []byte, isPrimary bool, isArray bool,
-	count int, desc []bool, buf []byte, meta *MutationMeta) (bs []byte, err error) {
+	count int, expiry uint32, desc []bool, buf []byte, meta *MutationMeta) (bs []byte, err error) {
 
 	if isPrimary {
 		bs, err = NewPrimaryIndexEntry(docid)
 	} else {
-		bs, err = NewSecondaryIndexEntry2(key, docid, isArray, count, desc, buf, false, meta)
+		bs, err = NewSecondaryIndexEntry2(key, docid, isArray, count, expiry, desc, buf, false, meta)
 		if err == ErrSecKeyNil {
 			return nil, nil
 		}
@@ -497,12 +535,12 @@ func GetIndexEntryBytes3(key []byte, docid []byte, isPrimary bool, isArray bool,
 }
 
 func GetIndexEntryBytes2(key []byte, docid []byte, isPrimary bool, isArray bool,
-	count int, desc []bool, buf []byte, meta *MutationMeta) (bs []byte, err error) {
+	count int, expiry uint32, desc []bool, buf []byte, meta *MutationMeta) (bs []byte, err error) {
 
 	if isPrimary {
 		bs, err = NewPrimaryIndexEntry(docid)
 	} else {
-		bs, err = NewSecondaryIndexEntry(key, docid, isArray, count, desc, buf, meta)
+		bs, err = NewSecondaryIndexEntry(key, docid, isArray, count, expiry, desc, buf, meta)
 		if err == ErrSecKeyNil {
 			return nil, nil
 		}
@@ -512,7 +550,7 @@ func GetIndexEntryBytes2(key []byte, docid []byte, isPrimary bool, isArray bool,
 }
 
 func GetIndexEntryBytes(key []byte, docid []byte, isPrimary bool, isArray bool,
-	count int, desc []bool, meta *MutationMeta) (entry []byte, err error) {
+	count int, expiry uint32, desc []bool, meta *MutationMeta) (entry []byte, err error) {
 
 	var bufPool *common.BytesBufPool
 	var bufPtr *[]byte
@@ -539,7 +577,7 @@ func GetIndexEntryBytes(key []byte, docid []byte, isPrimary bool, isArray bool,
 		}()
 	}
 
-	entry, err = GetIndexEntryBytes2(key, docid, isPrimary, isArray, count, desc, buf, meta)
+	entry, err = GetIndexEntryBytes2(key, docid, isPrimary, isArray, count, expiry, desc, buf, meta)
 	return append([]byte(nil), entry...), err
 }
 
