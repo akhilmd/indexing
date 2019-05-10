@@ -50,21 +50,32 @@ type indexMutation struct {
 	key   []byte
 	docid []byte
 	meta  *MutationMeta
+	expiry uint32
 }
 
 func docIdFromEntryBytes(e []byte) []byte {
-	offset := len(e) - 2
+	entryLen := len(e)
+
+	offset := entryLen - 2
 	l := binary.LittleEndian.Uint16(e[offset : offset+2])
-	// Length & 0111111 00000000
-	// as MSB of length is used to indicate presence of count
-	docidlen := int(l & 0x7fff)
-	offset = len(e) - 1
-	if (e[offset] & 0x80) == 0x80 { // if count is encoded
-		offset = len(e) - docidlen - 4
-	} else {
-		offset = len(e) - docidlen - 2
+
+	// Length & 00111111 11111111 (as MSB and 2nd MSB of length is used to indicate presence of count and expiry)
+	docidlen := int(l & 0x3fff)
+
+	// subtract docid and the len of docid
+	offset = entryLen - docidlen - 2
+
+	// if count is encoded, subtract another 2 bytes
+	if (e[entryLen - 1] & 0x80) == 0x80 {
+		offset -= 2
 	}
-	return e[offset : offset+docidlen]
+
+	// if expiry is encoded, subtract another 4 bytes
+	if (e[entryLen - 1] & 0x40) == 0x40 {
+		offset -= 4
+	}
+
+	return e[offset:offset+docidlen]
 }
 
 func entryBytesFromDocId(docid []byte) []byte {
@@ -372,7 +383,7 @@ loop:
 
 			case opDelete:
 				start = time.Now()
-				nmut = mdb.delete(icmd.docid, workerId)
+				nmut = mdb.delete(icmd.docid, workerId, icmd.expiry)
 				elapsed = time.Since(start)
 				mdb.totalFlushTime += elapsed
 
@@ -402,7 +413,7 @@ func (mdb *memdbSlice) insert(key []byte, docid []byte, workerId int, meta *Muta
 	if mdb.isPrimary {
 		nmut = mdb.insertPrimaryIndex(key, docid, workerId)
 	} else if len(key) == 0 {
-		nmut = mdb.delete(docid, workerId)
+		nmut = mdb.delete(docid, workerId, 0)
 	} else {
 		if mdb.idxDefn.IsArrayIndex {
 			nmut = mdb.insertSecArrayIndex(key, docid, workerId, meta)
@@ -435,13 +446,18 @@ func (mdb *memdbSlice) insertSecIndex(key []byte, docid []byte, workerId int, me
 	// a previous mainnode pointer entry
 	t0 := time.Now()
 
+	var expiry uint32
+	if mdb.idxDefn.TTL > 0 {
+		expiry = uint32(time.Now().Unix()) + mdb.idxDefn.TTL
+	}
+
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), allowLargeKeys)
 	entry, err := NewSecondaryIndexEntry(key, docid, mdb.idxDefn.IsArrayIndex,
-		1, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta)
+		1, expiry, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta)
 	if err != nil {
 		logging.Errorf("MemDBSlice::insertSecIndex Slice Id %v IndexInstId %v PartitionId %v "+
 			"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-		return mdb.deleteSecIndex(docid, workerId)
+		return mdb.deleteSecIndex(docid, workerId, 0)
 	}
 
 	newNode := mdb.main[workerId].Put2(entry)
@@ -474,7 +490,7 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 	if !allowLargeKeys && len(keys) > maxArrayIndexEntrySize {
 		logging.Errorf("MemDBSlice::insertSecArrayIndex Error indexing docid: %s in Slice: %v. Error: Encoded array key (size %v) too long (> %v). Skipped.",
 			logging.TagStrUD(docid), mdb.id, len(keys), maxArrayIndexEntrySize)
-		return mdb.deleteSecArrayIndex(docid, workerId)
+		return mdb.deleteSecArrayIndex(docid, workerId, 0)
 	}
 
 	var nmut int
@@ -484,7 +500,7 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 	if err != nil {
 		logging.Errorf("MemDBSlice::insert Error indexing docid: %s in Slice: %v. Error in creating "+
 			"compostite new secondary keys %v. Skipped.", logging.TagStrUD(docid), mdb.id, err)
-		return mdb.deleteSecArrayIndex(docid, workerId)
+		return mdb.deleteSecArrayIndex(docid, workerId, 0)
 	}
 
 	// Get old back index entry
@@ -498,6 +514,12 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 	list := memdb.NewNodeList((*skiplist.Node)(ptr))
 	oldEntriesBytes := list.Keys()
 	oldKeyCount := make([]int, len(oldEntriesBytes))
+
+	var oldExpiry uint32
+	if ptr != nil {
+		oldExpiry = secondaryIndexEntry(oldEntriesBytes[0]).Expiry()
+	}
+
 	for i, _ := range oldEntriesBytes {
 		e := secondaryIndexEntry(oldEntriesBytes[i])
 		oldKeyCount[i] = e.Count()
@@ -512,7 +534,17 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 
 	}
 
-	entryBytesToBeAdded, entryBytesToDeleted := CompareArrayEntriesWithCount(newEntriesBytes, oldEntriesBytes, newKeyCount, oldKeyCount)
+	var entryBytesToBeAdded, entryBytesToDeleted [][]byte
+	var expiry uint32
+
+	if mdb.idxDefn.TTL > 0 {
+		expiry = uint32(time.Now().Unix()) + mdb.idxDefn.TTL
+		entryBytesToBeAdded = newEntriesBytes
+		entryBytesToDeleted = oldEntriesBytes
+	} else {
+		entryBytesToBeAdded, entryBytesToDeleted = CompareArrayEntriesWithCount(newEntriesBytes, oldEntriesBytes, newKeyCount, oldKeyCount)
+	}
+
 	nmut = 0
 
 	emptyList := func() int {
@@ -540,7 +572,7 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 		if item != nil { // nil item indicates it should not be deleted
 			mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(item), true)
 			entry, err := NewSecondaryIndexEntry2(item, docid, false,
-				oldKeyCount[i], nil, mdb.encodeBuf[workerId][:0], false, nil)
+				oldKeyCount[i], oldExpiry, nil, mdb.encodeBuf[workerId][:0], false, nil)
 			if err != nil {
 				logging.Errorf("MemDBSlice::insertSecArrayIndex Slice Id %v IndexInstId %v PartitionId %v "+
 					"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
@@ -560,7 +592,7 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 			t0 := time.Now()
 			mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), allowLargeKeys)
 			entry, err := NewSecondaryIndexEntry(key, docid, false,
-				newKeyCount[i], mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], meta)
+				newKeyCount[i], expiry, mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], meta)
 			if err != nil {
 				logging.Errorf("MemDBSlice::insertSecArrayIndex Slice Id %v IndexInstId %v PartitionId %v "+
 					"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
@@ -583,15 +615,15 @@ func (mdb *memdbSlice) insertSecArrayIndex(keys []byte, docid []byte, workerId i
 	return nmut
 }
 
-func (mdb *memdbSlice) delete(docid []byte, workerId int) int {
+func (mdb *memdbSlice) delete(docid []byte, workerId int, expiry uint32) int {
 	var nmut int
 
 	if mdb.isPrimary {
 		nmut = mdb.deletePrimaryIndex(docid, workerId)
 	} else if !mdb.idxDefn.IsArrayIndex {
-		nmut = mdb.deleteSecIndex(docid, workerId)
+		nmut = mdb.deleteSecIndex(docid, workerId, expiry)
 	} else {
-		nmut = mdb.deleteSecArrayIndex(docid, workerId)
+		nmut = mdb.deleteSecArrayIndex(docid, workerId, expiry)
 	}
 
 	mdb.logWriterStat()
@@ -619,8 +651,17 @@ func (mdb *memdbSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int)
 
 }
 
-func (mdb *memdbSlice) deleteSecIndex(docid []byte, workerId int) int {
+func (mdb *memdbSlice) deleteSecIndex(docid []byte, workerId int, expiry uint32) int {
 	lookupentry := entryBytesFromDocId(docid)
+
+	// Since entry can be updated since queuing a delete into a worker, verify before deleting.
+	if expiry > 0 {
+		if node := mdb.back[workerId].Get(lookupentry); node != nil {
+			if entry := secondaryIndexEntry(((*memdb.Item)((*skiplist.Node)(node).Item())).Bytes()); expiry != entry.Expiry() {
+				return 0
+			}
+		}
+	}
 
 	// Delete entry from back and main index if present
 	t0 := time.Now()
@@ -638,7 +679,7 @@ func (mdb *memdbSlice) deleteSecIndex(docid []byte, workerId int) int {
 	return 1
 }
 
-func (mdb *memdbSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut int) {
+func (mdb *memdbSlice) deleteSecArrayIndex(docid []byte, workerId int, expiry uint32) (nmut int) {
 	// Get old back index entry
 	lookupentry := entryBytesFromDocId(docid)
 	ptr := (*skiplist.Node)(mdb.back[workerId].Get(lookupentry))
@@ -647,6 +688,10 @@ func (mdb *memdbSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut int
 	}
 	list := memdb.NewNodeList(ptr)
 	oldEntriesBytes := list.Keys()
+
+	if expiry > 0 && expiry != secondaryIndexEntry(oldEntriesBytes[0]).Expiry() {
+		return
+	}
 
 	t0 := time.Now()
 	mdb.back[workerId].Remove(lookupentry)
@@ -746,6 +791,18 @@ func (mdb *memdbSlice) OpenSnapshot(info SnapshotInfo) (Snapshot, error) {
 	return s, err
 }
 
+// Generated using the AUTODIN II polynomial based on
+// gocbcore at cbcrc.go and from FreeBSD at src/usr.bin/cksum/crc32.c.
+var crc32Autodin2 *crc32.Table = crc32.MakeTable(0xEDB88320)
+
+// Calculate workerId from the docid by using CRC32 hash
+// CRC32 hash with AUTODIN II table and output right shifted by 16
+// Use (n & (numVbuckets - 1)) instead of (n % numVbuckets) since numVbuckets is power of 2
+func (mdb *memdbSlice) getWorkerIdFromDocid(docid []byte) int {
+	numVbucketsM1 := uint32(mdb.sysconf["numVbuckets"].Int() - 1)
+	return int((crc32.Checksum(docid, crc32Autodin2) >> 16) & numVbucketsM1) % mdb.numWriters
+}
+
 func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 	var concurrency int = 1
 
@@ -777,6 +834,15 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 		// it is enough to throttle just one writer go routine of each batch.
 		var throttleToken int64
 		limitWriterThreads := func(itm *memdb.ItemEntry) {
+			var docid []byte
+			entry := secondaryIndexEntry(itm.Item().Bytes())
+			docid, _ = entry.ReadDocId(docid)
+			currTime := uint32(time.Now().Unix())
+			expiry := entry.Expiry()
+
+			if entry.isExpiryEncoded() && currTime > expiry {
+				mdb.cmdCh[mdb.getWorkerIdFromDocid(docid)] <- indexMutation{op: opDelete, docid: docid, expiry: expiry}
+			}
 			if atomic.CompareAndSwapInt64(&throttleToken, 0, 1) {
 				moiWriterSemaphoreCh <- true
 			}
