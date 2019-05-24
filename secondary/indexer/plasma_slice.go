@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"math"
 	"math/rand"
 	"os"
@@ -222,6 +223,19 @@ func newPlasmaSlice(path string, sliceId SliceId, idxDefn common.IndexDefn,
 	return slice, nil
 }
 
+// Generated using the AUTODIN II polynomial based on
+// gocbcore at cbcrc.go and from FreeBSD at src/usr.bin/cksum/crc32.c.
+var crc32Autodin2 *crc32.Table = crc32.MakeTable(0xEDB88320)
+
+// Calculate workerId from the docid by using CRC32 hash
+// CRC32 hash with AUTODIN II table and output right shifted by 16
+// Use (n & (numVbuckets - 1)) instead of (n % numVbuckets) since numVbuckets is power of 2
+func (mdb *plasmaSlice) getWorkerIdFromDocid(docid []byte) int {
+	numVbucketsM1 := uint32(mdb.sysconf["numVbuckets"].Int() - 1)
+	return int((crc32.Checksum(docid, crc32Autodin2) >> 16) & numVbucketsM1) % mdb.numWriters
+}
+
+
 func (slice *plasmaSlice) initStores() error {
 	var err error
 	cfg := plasma.DefaultConfig()
@@ -277,6 +291,12 @@ func (slice *plasmaSlice) initStores() error {
 	mCfg.LSSCleanerThreshold = slice.sysconf["plasma.mainIndex.LSSFragmentation"].Int()
 	mCfg.LSSCleanerMaxThreshold = slice.sysconf["plasma.mainIndex.maxLSSFragmentation"].Int()
 	mCfg.LogPrefix = fmt.Sprintf("%s/%s/Mainstore#%d:%d ", slice.idxDefn.Bucket, slice.idxDefn.Name, slice.idxInstId, slice.idxPartnId)
+	mCfg.ExpiryCallback = func(key []byte, sn uint64) {
+		entry := secondaryIndexEntry(key)
+		docid, _ := entry.ReadDocId([]byte{})
+		// logging.Infof("amd: main: epxired = [%s]", docid)
+		slice.cmdCh[slice.getWorkerIdFromDocid(docid)] <- indexMutation{op: opDelete, docid: docid, sn: sn}
+	}
 
 	bCfg.MaxDeltaChainLen = slice.sysconf["plasma.backIndex.maxNumPageDeltas"].Int()
 	bCfg.MaxPageItems = slice.sysconf["plasma.backIndex.pageSplitThreshold"].Int()
@@ -285,6 +305,11 @@ func (slice *plasmaSlice) initStores() error {
 	bCfg.LSSCleanerThreshold = slice.sysconf["plasma.backIndex.LSSFragmentation"].Int()
 	bCfg.LSSCleanerMaxThreshold = slice.sysconf["plasma.backIndex.maxLSSFragmentation"].Int()
 	bCfg.LogPrefix = fmt.Sprintf("%s/%s/Backstore#%d:%d ", slice.idxDefn.Bucket, slice.idxDefn.Name, slice.idxInstId, slice.idxPartnId)
+	bCfg.ExpiryCallback = func(key []byte, sn uint64) {
+		docid := append([]byte{}, key...)
+		// logging.Infof("amd: back: epxired = [%s]", docid)
+		slice.cmdCh[slice.getWorkerIdFromDocid(key)] <- indexMutation{op: opDelete, docid: docid, sn: sn}
+	}
 
 	if slice.hasPersistence {
 		mCfg.File = filepath.Join(slice.path, "mainIndex")
@@ -495,7 +520,7 @@ loop:
 
 			case opDelete:
 				start = time.Now()
-				nmut = mdb.delete(icmd.docid, workerId)
+				nmut = mdb.delete(icmd.docid, workerId, icmd.sn)
 				elapsed = time.Since(start)
 				mdb.totalFlushTime += elapsed
 
@@ -533,7 +558,7 @@ func (mdb *plasmaSlice) insert(key []byte, docid []byte, workerId int,
 	if mdb.isPrimary {
 		nmut = mdb.insertPrimaryIndex(key, docid, workerId)
 	} else if len(key) == 0 {
-		nmut = mdb.delete(docid, workerId)
+		nmut = mdb.delete(docid, workerId, 0)
 	} else {
 		if mdb.idxDefn.IsArrayIndex {
 			nmut = mdb.insertSecArrayIndex(key, docid, workerId, init, meta)
@@ -554,7 +579,7 @@ func (mdb *plasmaSlice) insertPrimaryIndex(key []byte, docid []byte, workerId in
 	mdb.main[workerId].Begin()
 	defer mdb.main[workerId].End()
 
-	_, err = mdb.main[workerId].LookupKV(entry)
+	_, _, err = mdb.main[workerId].LookupKV(entry)
 	if err == plasma.ErrItemNotFound {
 		t0 := time.Now()
 		mdb.main[workerId].InsertKV(entry, nil)
@@ -575,7 +600,7 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
-		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId); !changed {
+		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId, 0); !changed {
 			return 0
 		}
 	}
@@ -618,7 +643,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 	if !allowLargeKeys && len(key) > maxArrayIndexEntrySize {
 		logging.Errorf("plasmaSlice::insertSecArrayIndex Error indexing docid: %s in Slice: %v. Error: Encoded array key (size %v) too long (> %v). Skipped.",
 			logging.TagStrUD(docid), mdb.id, len(key), maxArrayIndexEntrySize)
-		mdb.deleteSecArrayIndex(docid, workerId)
+		mdb.deleteSecArrayIndex(docid, workerId, 0)
 		return 0
 	}
 
@@ -629,7 +654,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
-		oldkey, err = mdb.back[workerId].LookupKV(docid)
+		oldkey, _, err = mdb.back[workerId].LookupKV(docid)
 		if err == plasma.ErrItemNotFound {
 			oldkey = nil
 		}
@@ -663,7 +688,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error in retrieving "+
 				"compostite old secondary keys. Skipping docid:%s Error: %v",
 				mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-			mdb.deleteSecArrayIndexNoTx(docid, workerId)
+			mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 			return 0
 		}
 	}
@@ -677,7 +702,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error in creating "+
 				"compostite new secondary keys. Skipping docid:%s Error: %v",
 				mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-			mdb.deleteSecArrayIndexNoTx(docid, workerId)
+			mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 			return 0
 		}
 	}
@@ -735,7 +760,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 				logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error forming entry "+
 					"to be added to main index. Skipping docid:%s Error: %v",
 					mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-				mdb.deleteSecArrayIndexNoTx(docid, workerId)
+				mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 				return 0
 			}
 			t0 := time.Now()
@@ -760,7 +785,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 				logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error forming entry "+
 					"to be added to main index. Skipping docid:%s Error: %v",
 					mdb.id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
-				mdb.deleteSecArrayIndexNoTx(docid, workerId)
+				mdb.deleteSecArrayIndexNoTx(docid, workerId, 0)
 				return 0
 			}
 			t0 := time.Now()
@@ -810,15 +835,15 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 	return nmut
 }
 
-func (mdb *plasmaSlice) delete(docid []byte, workerId int) int {
+func (mdb *plasmaSlice) delete(docid []byte, workerId int, sn uint64) int {
 	var nmut int
 
 	if mdb.isPrimary {
 		nmut = mdb.deletePrimaryIndex(docid, workerId)
 	} else if !mdb.idxDefn.IsArrayIndex {
-		nmut, _ = mdb.deleteSecIndex(docid, nil, workerId)
+		nmut, _ = mdb.deleteSecIndex(docid, nil, workerId, sn)
 	} else {
-		nmut = mdb.deleteSecArrayIndex(docid, workerId)
+		nmut = mdb.deleteSecArrayIndex(docid, workerId, sn)
 	}
 
 	mdb.logWriterStat()
@@ -842,7 +867,7 @@ func (mdb *plasmaSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int
 	mdb.main[workerId].Begin()
 	defer mdb.main[workerId].End()
 
-	if _, err := mdb.main[workerId].LookupKV(entry); err == plasma.ErrItemNoValue {
+	if _, _, err := mdb.main[workerId].LookupKV(entry); err == plasma.ErrItemNoValue {
 		mdb.main[workerId].DeleteKV(itm)
 		mdb.idxStats.Timings.stKVDelete.Put(time.Now().Sub(t0))
 		atomic.AddInt64(&mdb.delete_bytes, int64(len(entry.Bytes())))
@@ -853,13 +878,16 @@ func (mdb *plasmaSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int
 	return 0
 }
 
-func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId int) (ndel int, changed bool) {
+func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId int, sn uint64) (ndel int, changed bool) {
 
 	// Delete entry from back and main index if present
 	mdb.back[workerId].Begin()
 	defer mdb.back[workerId].End()
 
-	backEntry, err := mdb.back[workerId].LookupKV(docid)
+	backEntry, entrySn, err := mdb.back[workerId].LookupKV(docid)
+	if sn > 0 && sn != entrySn {
+		return 0, false
+	}
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(backEntry), true)
 	buf := mdb.encodeBuf[workerId]
 
@@ -885,7 +913,7 @@ func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId
 	return 1, true
 }
 
-func (mdb *plasmaSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut int) {
+func (mdb *plasmaSlice) deleteSecArrayIndex(docid []byte, workerId int, sn uint64) (nmut int) {
 
 	mdb.back[workerId].Begin()
 	defer mdb.back[workerId].End()
@@ -893,14 +921,17 @@ func (mdb *plasmaSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut in
 	mdb.main[workerId].Begin()
 	defer mdb.main[workerId].End()
 
-	return mdb.deleteSecArrayIndexNoTx(docid, workerId)
+	return mdb.deleteSecArrayIndexNoTx(docid, workerId, sn)
 }
 
-func (mdb *plasmaSlice) deleteSecArrayIndexNoTx(docid []byte, workerId int) (nmut int) {
+func (mdb *plasmaSlice) deleteSecArrayIndexNoTx(docid []byte, workerId int, sn uint64) (nmut int) {
 	var olditm []byte
 	var err error
 
-	olditm, err = mdb.back[workerId].LookupKV(docid)
+	olditm, entrySn, err := mdb.back[workerId].LookupKV(docid)
+	if sn > 0 && sn != entrySn {
+		return 0
+	}
 	if err == plasma.ErrItemNotFound {
 		olditm = nil
 	}
@@ -1014,10 +1045,11 @@ type plasmaSnapshot struct {
 }
 
 func (mdb *plasmaSlice) SetNextSnapshotNumber() {
-	mdb.mainstore.SetNextSn()
+	now := plasma.NowUnixMillis()
+	mdb.mainstore.SetNextSn(now)
 
 	if !mdb.isPrimary {
-		mdb.backstore.SetNextSn()
+		mdb.backstore.SetNextSn(now)
 	}
 }
 
@@ -2269,6 +2301,7 @@ func (slice *plasmaSlice) initWriters(numWriters int) {
 
 	// initialize command handler
 	queueSize := slice.defaultCmdQueueSize()
+	logging.Infof("amd: queueSize = [%d]", queueSize)
 	slice.cmdCh = slice.cmdCh[:numWriters]
 	slice.workerDone = slice.workerDone[:numWriters]
 	slice.stopCh = slice.stopCh[:numWriters]

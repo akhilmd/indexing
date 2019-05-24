@@ -50,6 +50,7 @@ type indexMutation struct {
 	key   []byte
 	docid []byte
 	meta  *MutationMeta
+	sn    uint64
 }
 
 func docIdFromEntryBytes(e []byte) []byte {

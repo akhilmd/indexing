@@ -13,7 +13,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
+	// "time"
 
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/indexing/secondary/logging"
@@ -843,7 +843,7 @@ func (m *mutationMgr) handlePersistMutationQueue(cmd Message) {
 
 }
 
-var then time.Time
+// var then time.Time
 //persistMutationQueue implements the actual persist for the queue
 func (m *mutationMgr) persistMutationQueue(q IndexerMutationQueue,
 	streamId common.StreamId, bucket string, ts *common.TsVbuuid,
@@ -857,8 +857,8 @@ func (m *mutationMgr) persistMutationQueue(q IndexerMutationQueue,
 	m.flusherWaitGroup.Add(1)
 
 	go func(config common.Config) {
-		logging.Infof("amd: persistMutationQueue t=[%v]", time.Since(then))
-		then = time.Now()
+		// logging.Infof("amd: persistMutationQueue t=[%v]", time.Since(then))
+		// then = time.Now()
 		defer m.flusherWaitGroup.Done()
 
 		// Do SetNextSn here, blocking, on all the snapshots for
@@ -878,7 +878,7 @@ func (m *mutationMgr) persistMutationQueue(q IndexerMutationQueue,
 
 						// For all slices in the partn
 						for _, slice := range sc.GetAllSlices() {
-							logging.Infof("amd: Slice setting nextSn")
+							// logging.Infof("amd: Slice setting nextSn")
 							slice.SetNextSnapshotNumber()
 						}
 					}
