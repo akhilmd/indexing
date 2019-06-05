@@ -1743,22 +1743,22 @@ func (o *MetadataProvider) getTTLParam(plan map[string]interface{}) (uint64, err
 	ttl := uint64(0)
 
 	ttl2, ok := plan["ttl"].(float64)
-   if !ok {
-	   ttl_str, ok := plan["ttl"].(string)
-	   if ok {
-		   var err error
-		   ttl3, err := strconv.ParseUint(ttl_str, 10, 64)
-		   if err != nil {
-			   return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
-		   }
-		   ttl = uint64(ttl3)
+	if !ok {
+		ttl_str, ok := plan["ttl"].(string)
+		if ok {
+			var err error
+			ttl3, err := strconv.ParseUint(ttl_str, 10, 64)
+			if err != nil {
+				return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
+			}
+			ttl = uint64(ttl3)
 
 		} else if _, ok := plan["ttl"]; ok {
-		   return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
-	   }
-   } else {
-	   ttl = uint64(ttl2)
-   }
+			return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
+		}
+	} else {
+		ttl = uint64(ttl2)
+	}
 
 	return ttl, nil, false
 }

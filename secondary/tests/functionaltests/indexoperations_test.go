@@ -262,6 +262,7 @@ func TestCreate2Drop1Scan2(t *testing.T) {
 
 	err := secondaryindex.CreateSecondaryIndex(index1, bucketName, indexManagementAddress, "", []string{"company"}, false, nil, true, defaultIndexActiveTimeout, nil)
 	FailTestIfError(err, "Error in creating the index", t)
+	// err = secondaryindex.CreateSecondaryIndex("idx_age", "default", indexManagementAddress, "", []string{"age"}, false, nil, true, defaultIndexActiveTimeout, nil)
 	err = secondaryindex.CreateSecondaryIndex(index2, bucketName, indexManagementAddress, "", []string{"age"}, false, nil, true, defaultIndexActiveTimeout, nil)
 	FailTestIfError(err, "Error in creating the index", t)
 

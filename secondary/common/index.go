@@ -561,7 +561,10 @@ func IsValidIndexType(t string) bool {
 	return false
 }
 
-func IsEquivalentIndex(d1, d2 *IndexDefn) bool {
+func IsEquivalentIndex(d1, d2 *IndexDefn) (rv bool) {
+	defer func() {
+		logging.Infof("amd: comparing indexes: d1=[%s], d2=[%s] IsEquivalentIndex=[%v]", d1.Name, d2.Name, rv)
+	}()
 
 	if d1.Bucket != d2.Bucket ||
 		d1.IsPrimary != d2.IsPrimary ||
