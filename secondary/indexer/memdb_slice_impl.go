@@ -1106,6 +1106,9 @@ func (mdb *memdbSlice) LastRollbackTs() *common.TsVbuuid {
 	return mdb.lastRollbackTs
 }
 
+func (mdb *memdbSlice) PausePurger() { }
+func (mdb *memdbSlice) ResumePurger() { }
+
 //slice insert/delete methods are async. There
 //can be outstanding mutations in internal queue to flush even
 //after insert/delete have return success to caller.
@@ -1374,6 +1377,10 @@ func (info *memdbSnapshotInfo) IsCommitted() bool {
 
 func (info *memdbSnapshotInfo) Stats() map[string]interface{} {
 	return info.IndexStats
+}
+
+func (info *memdbSnapshotInfo) GetExpiryHistogram() *Histogram {
+	return nil
 }
 
 func (info *memdbSnapshotInfo) String() string {

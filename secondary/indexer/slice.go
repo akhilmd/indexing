@@ -36,6 +36,8 @@ type Slice interface {
 	IsActive() bool
 	IsDirty() bool
 	SetNextSnapshotNumber()
+	PausePurger()
+	ResumePurger()
 
 	SetActive(bool)
 	SetStatus(SliceStatus)

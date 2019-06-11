@@ -1087,6 +1087,9 @@ func (fdb *fdbSlice) LastRollbackTs() *common.TsVbuuid {
 	return fdb.lastRollbackTs
 }
 
+func (mdb *fdbSlice) PausePurger() { }
+func (mdb *fdbSlice) ResumePurger() { }
+
 //slice insert/delete methods are async. There
 //can be outstanding mutations in internal queue to flush even
 //after insert/delete have return success to caller.
