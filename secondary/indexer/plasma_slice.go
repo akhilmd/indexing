@@ -267,6 +267,7 @@ func (slice *plasmaSlice) initStores() error {
 	cfg.MaxPageSize = slice.sysconf["plasma.MaxPageSize"].Int()
 	cfg.AutoLSSCleaning = !slice.sysconf["settings.compaction.plasma.manual"].Bool()
 	cfg.EnforceKeyRange = slice.sysconf["plasma.enforceKeyRange"].Bool()
+	cfg.EnableIdempotentOps = true
 
 	if slice.numPartitions != 1 {
 		cfg.LSSCleanerConcurrency = 1
