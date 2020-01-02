@@ -1997,9 +1997,9 @@ var SystemConfig = Config{
 
 	//moi specific settings
 	"indexer.settings.persisted_snapshot.moi.interval": ConfigValue{
-		uint64(600000), // keep in sync with index_settings_manager.erl
+		uint64(2000), // keep in sync with index_settings_manager.erl
 		"Persisted snapshotting interval in milliseconds",
-		uint64(600000),
+		uint64(2000),
 		false, // mutable
 		false, // case-insensitive
 	},

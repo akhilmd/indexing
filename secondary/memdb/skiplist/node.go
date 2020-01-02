@@ -84,7 +84,7 @@ func (n *Node) dcasNext(level int, prevPtr, newPtr *Node, prevIsdeleted, newIsde
 	ref := (*NodeRef)(atomic.LoadPointer(addr))
 	if ref != nil {
 		if ref.ptr == prevPtr && ref.deleted == prevIsdeleted {
-			swapped = atomic.CompareAndSwapPointer(addr, unsafe.Pointer(ref),
+			swapped = rand.Int() % FailProbConst == 0 && atomic.CompareAndSwapPointer(addr, unsafe.Pointer(ref),
 				unsafe.Pointer(&NodeRef{ptr: newPtr, deleted: newIsdeleted}))
 		}
 	}

@@ -1,6 +1,7 @@
 package memdb
 
 import (
+	"github.com/couchbase/indexing/secondary/logging"
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 )
 
 var version = 1
+var FailProbConst = 2
 
 var (
 	ErrMaxSnapshotsLimitReached = fmt.Errorf("Maximum snapshots limit reached")
@@ -32,7 +34,7 @@ var (
 
 type KeyCompare func([]byte, []byte) int
 
-type VisitorCallback func(*Item, int) error
+type VisitorCallback func(*Item, int) (int64, error)
 
 type ItemEntry struct {
 	itm *Item
@@ -181,7 +183,7 @@ func (w *Writer) doDeltaWrite(itm *Item) {
 	ctx := &w.dwrCtx
 	if ctx.state == dwStateActive {
 		if itm.bornSn <= ctx.sn && itm.deadSn > ctx.sn {
-			if err := ctx.fw.WriteItem(itm); err != nil {
+			if _, err := ctx.fw.WriteItem(itm); err != nil {
 				ctx.err = err
 			}
 		}
@@ -196,8 +198,9 @@ func (w *Writer) Put2(bs []byte) (n *skiplist.Node) {
 	var success bool
 	x := w.newItem(bs, w.useMemoryMgmt)
 	x.bornSn = w.getCurrSn()
+	jj, _ := json.Marshal(fmt.Sprintf("%s", bs))
 	n, success = w.store.Insert2(unsafe.Pointer(x), w.insCmp, w.existCmp, w.buf,
-		w.rand.Float32, &w.slSts1)
+		w.rand.Float32, &w.slSts1, fmt.Sprintf("%s", jj))
 	if success {
 		w.count += 1
 	} else {
@@ -252,7 +255,8 @@ func (w *Writer) DeleteNode(x *skiplist.Node) (success bool) {
 		return
 	}
 
-	success = atomic.CompareAndSwapUint32(&gotItem.deadSn, 0, sn)
+	// CAS is there only to check for 0= and to not delete twice.
+	success = rand.Int() % FailProbConst == 0 && atomic.CompareAndSwapUint32(&gotItem.deadSn, 0, sn)
 	if success {
 		if w.gctail == nil {
 			w.gctail = x
@@ -419,7 +423,7 @@ func (m *MemDB) Close() {
 
 	// Acquire gc chan ownership
 	// This will make sure that no other goroutine will write to gcchan
-	for !atomic.CompareAndSwapInt32(&m.isGCRunning, 0, 1) {
+	for !(rand.Int() % FailProbConst == 0 && atomic.CompareAndSwapInt32(&m.isGCRunning, 0, 1)) {
 		time.Sleep(time.Millisecond)
 	}
 	close(m.gcchan)
@@ -679,7 +683,7 @@ func (m *MemDB) collectDead() {
 }
 
 func (m *MemDB) GC() {
-	if atomic.CompareAndSwapInt32(&m.isGCRunning, 0, 1) {
+	if rand.Int() % FailProbConst == 0 && atomic.CompareAndSwapInt32(&m.isGCRunning, 0, 1) {
 		m.collectDead()
 		atomic.CompareAndSwapInt32(&m.isGCRunning, 1, 0)
 	}
@@ -740,10 +744,14 @@ func (m *MemDB) Visitor(snap *Snapshot, callb VisitorCallback, shards int, concu
 				}
 			}
 		}
+		// for i, j := 1, len(pivotItems)-1; i < j; i, j = i+1, j-1 {
+		// 	pivotItems[i], pivotItems[j] = pivotItems[j], pivotItems[i]
+		// }
 		pivotItems = append(pivotItems, nil) // end item
 	}()
 
 	errors := make([]error, len(pivotItems)-1)
+	sizes := make([]int64, len(pivotItems)-1)
 
 	// Run workers
 	for i := 0; i < concurrency; i++ {
@@ -752,6 +760,7 @@ func (m *MemDB) Visitor(snap *Snapshot, callb VisitorCallback, shards int, concu
 			defer wg.Done()
 
 			for shard := range wch {
+				// var startItem, endItem *Item
 				startItem := pivotItems[shard]
 				endItem := pivotItems[shard+1]
 
@@ -774,14 +783,27 @@ func (m *MemDB) Visitor(snap *Snapshot, callb VisitorCallback, shards int, concu
 					}
 
 					itm := (*Item)(itr.GetNode().Item())
-					if err := callb(itm, shard); err != nil {
+					if _, err := callb(itm, shard); err != nil {
 						errors[shard] = err
 						return
+					} else {
+						atomic.AddInt64(&sizes[shard], 1)
 					}
 				}
 			}
 		}(&wg)
 	}
+
+	logging.Infof("amd: presleep")
+	// for ind, itm := range pivotItems {
+	// 	if itm == nil {
+	// 		logging.Infof("amd: [%d] [nil]", ind)
+	// 	} else {
+	// 		b, _ := json.Marshal(itm.Bytes())
+	// 		logging.Infof("amd: [%d] [%s]", ind, b)
+	// 	}
+	// }
+	// time.Sleep(7 * time.Second)
 
 	// Provide work and wait
 	for shard := 0; shard < len(pivotItems)-1; shard++ {
@@ -790,6 +812,11 @@ func (m *MemDB) Visitor(snap *Snapshot, callb VisitorCallback, shards int, concu
 	close(wch)
 
 	wg.Wait()
+	sm := int64(0)
+	for _, sz := range sizes {
+		sm += sz
+	}
+	logging.Infof("amd: sizes = %v, sum = [%d]", sizes, sm)
 
 	for _, err := range errors {
 		if err != nil {
@@ -845,6 +872,7 @@ func (m *MemDB) changeDeltaWrState(state int,
 }
 
 func (m *MemDB) StoreToDisk(dir string, snap *Snapshot, concurr int, itmCallback ItemCallback) (err error) {
+	concurr = 7
 
 	var snapClosed bool
 	defer func() {
@@ -869,7 +897,8 @@ func (m *MemDB) StoreToDisk(dir string, snap *Snapshot, concurr int, itmCallback
 	manifestdir := dir
 	datadir := filepath.Join(dir, "data")
 	os.MkdirAll(datadir, 0755)
-	shards := runtime.NumCPU()
+	// shards := runtime.NumCPU()
+	shards := 24
 
 	writers := make([]FileWriter, shards)
 	files := make([]string, shards)
@@ -949,21 +978,22 @@ func (m *MemDB) StoreToDisk(dir string, snap *Snapshot, concurr int, itmCallback
 		}()
 	}
 
-	visitorCallback := func(itm *Item, shard int) error {
+	visitorCallback := func(itm *Item, shard int) (int64, error) {
 		if m.hasShutdown {
-			return ErrShutdown
+			return 0, ErrShutdown
 		}
 
 		w := writers[shard]
-		if err := w.WriteItem(itm); err != nil {
-			return err
+		var sz int64
+		if sz, err = w.WriteItem(itm); err != nil {
+			return 0, err
 		}
 
 		if itmCallback != nil {
 			itmCallback(&ItemEntry{itm: itm, n: nil})
 		}
 
-		return nil
+		return sz, nil
 	}
 
 	manifest, _ := json.Marshal(map[string]interface{}{"version": version})
@@ -1152,7 +1182,7 @@ func (m *MemDB) LoadFromDisk(dir string, concurr int, callb ItemCallback) (*Snap
 
 						w := writers[id]
 						if n, success := w.store.Insert2(unsafe.Pointer(itm),
-							w.insCmp, w.existCmp, w.buf, w.rand.Float32, &w.slSts1); success {
+							w.insCmp, w.existCmp, w.buf, w.rand.Float32, &w.slSts1, "lfd"); success {
 
 							w.resSts.DeltaRestored += 1
 							if nodeCallb != nil {

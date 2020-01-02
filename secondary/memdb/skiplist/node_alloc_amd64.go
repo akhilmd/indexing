@@ -1,6 +1,7 @@
 package skiplist
 
 import (
+	"github.com/couchbase/indexing/secondary/logging"
 	"reflect"
 	"unsafe"
 )
@@ -237,12 +238,14 @@ var node32 struct {
 	buf [33]NodeRef
 }
 
-func allocNode(itm unsafe.Pointer, level int, malloc MallocFn) *Node {
+func allocNode(itm unsafe.Pointer, level int, malloc MallocFn, ib string) *Node {
 	var block unsafe.Pointer
 	if malloc == nil {
 		block = unsafe.Pointer(reflect.New(nodeTypes[level]).Pointer())
 	} else {
-		block = malloc(int(nodeTypes[level].Size()))
+		sz := int(nodeTypes[level].Size())
+		block = malloc(sz)
+		logging.Infof("amd: allocd sz[%d] level[%d] ib[%s] start[%d] end[%d]", sz, level, ib, uintptr(block), uintptr(block)+uintptr(sz))
 	}
 
 	n := (*Node)(block)

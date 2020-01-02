@@ -22,7 +22,7 @@ func (s *Segment) SetNodeCallback(fn NodeCallback) {
 
 func (s *Segment) Add(itm unsafe.Pointer) {
 	itemLevel := s.builder.store.NewLevel(s.rand.Float32)
-	x := s.builder.store.newNode(itm, itemLevel)
+	x := s.builder.store.newNode(itm, itemLevel, "bldr")
 	s.sts.AddInt64(&s.sts.nodeAllocs, 1)
 	s.sts.AddInt64(&s.sts.levelNodesCount[itemLevel], 1)
 	s.sts.AddInt64(&s.sts.usedBytes, int64(s.builder.store.Size(x)))

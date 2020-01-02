@@ -1,10 +1,12 @@
 package skiplist
 
 import (
+	// "github.com/couchbase/indexing/secondary/logging"
 	"math/rand"
 	"runtime"
 	"sync/atomic"
 	"unsafe"
+	"time"
 )
 
 var Debug bool
@@ -49,8 +51,10 @@ type Skiplist struct {
 	Stats   Stats
 	barrier *AccessBarrier
 
-	newNode  func(itm unsafe.Pointer, level int) *Node
+	newNode  func(itm unsafe.Pointer, level int, ib string) *Node
 	freeNode func(*Node)
+
+	ic int64
 
 	Config
 }
@@ -58,8 +62,9 @@ type Skiplist struct {
 func New() *Skiplist {
 	return NewWithConfig(DefaultConfig())
 }
-
+var start time.Time
 func NewWithConfig(cfg Config) *Skiplist {
+	start = time.Now()
 	if runtime.GOARCH != "amd64" {
 		cfg.UseMemoryMgmt = false
 	}
@@ -69,8 +74,8 @@ func NewWithConfig(cfg Config) *Skiplist {
 		barrier: newAccessBarrier(cfg.UseMemoryMgmt, cfg.BarrierDestructor),
 	}
 
-	s.newNode = func(itm unsafe.Pointer, level int) *Node {
-		return allocNode(itm, level, cfg.Malloc)
+	s.newNode = func(itm unsafe.Pointer, level int, ib string) *Node {
+		return allocNode(itm, level, cfg.Malloc, ib)
 	}
 
 	if cfg.UseMemoryMgmt {
@@ -84,8 +89,8 @@ func NewWithConfig(cfg Config) *Skiplist {
 		s.freeNode = func(*Node) {}
 	}
 
-	head := s.newNode(nil, MaxLevel)
-	tail := s.newNode(nil, MaxLevel)
+	head := s.newNode(nil, MaxLevel, "HEAD")
+	tail := s.newNode(nil, MaxLevel, "TAIL")
 
 	for i := 0; i <= MaxLevel; i++ {
 		head.setNext(i, tail, false)
@@ -129,6 +134,8 @@ func (s *Skiplist) Size(n *Node) int {
 func (s *Skiplist) NewLevel(randFn func() float32) int {
 	var nextLevel int
 
+	// TODO: Use exponential distribution to generate random number and use it directly as the level?
+	// Shouldn't this be capped to prevent infinite loop?
 	for ; randFn() < p; nextLevel++ {
 	}
 
@@ -201,23 +208,25 @@ retry:
 
 func (s *Skiplist) Insert(itm unsafe.Pointer, cmp CompareFn,
 	buf *ActionBuffer, sts *Stats) (success bool) {
-	_, success = s.Insert2(itm, cmp, nil, buf, rand.Float32, sts)
+	_, success = s.Insert2(itm, cmp, nil, buf, rand.Float32, sts, "fromInsert")
 	return
 }
 
 func (s *Skiplist) Insert2(itm unsafe.Pointer, inscmp CompareFn, eqCmp CompareFn,
-	buf *ActionBuffer, randFn func() float32, sts *Stats) (*Node, bool) {
+	buf *ActionBuffer, randFn func() float32, sts *Stats, ib string) (*Node, bool) {
 	itemLevel := s.NewLevel(randFn)
-	return s.Insert3(itm, inscmp, eqCmp, buf, itemLevel, false, sts)
+	return s.Insert3(itm, inscmp, eqCmp, buf, itemLevel, false, sts, ib)
 }
 
 func (s *Skiplist) Insert3(itm unsafe.Pointer, insCmp CompareFn, eqCmp CompareFn,
-	buf *ActionBuffer, itemLevel int, skipFindPath bool, sts *Stats) (*Node, bool) {
+	buf *ActionBuffer, itemLevel int, skipFindPath bool, sts *Stats, ib string) (*Node, bool) {
+
+	// cc := atomic.AddInt64(&s.ic, 1)
 
 	token := s.barrier.Acquire()
 	defer s.barrier.Release(token)
 
-	x := s.newNode(itm, itemLevel)
+	x := s.newNode(itm, itemLevel, ib)
 
 retry:
 	if skipFindPath {
@@ -230,6 +239,37 @@ retry:
 			return nil, false
 		}
 	}
+
+	// logging.Infof("amd: Insert3 colled [%d] times", cc)
+
+	// One of the succs is getting either one of the preds somehow or some other pointer from behind?
+	// TODO: just low prob, make it happen and see if we get large files?
+	
+	// if 10000 == cc {
+	// 	nextNode := buf.succs[0]
+	// 	if itemLevel > 0 {
+	// 	// if rand.Float32() > 0.9999 && itemLevel > 0 {
+	// 	// if time.Since(start) > time.Minute && itemLevel > 0 {
+	// 		ri := rand.Int()
+	// 		pl := itemLevel - 1 - (ri % itemLevel)
+	// 		logging.Infof("amd: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX [%d], ri[%d], il[%d]", pl, ri, itemLevel)
+ 	// 		nextNode = buf.preds[pl]
+	// 	}
+	// 	buf.succs[0] = nextNode
+	// }
+
+	// // Set all next links for the node non-atomically
+	// for i := 0; i <= int(itemLevel); i++ {
+	// 	if false && i==0 && itemLevel > 0 && 10000 == cc {
+	// 		ri := rand.Int()
+	// 		pl := itemLevel - 1 - (ri % itemLevel)
+	// 		logging.Infof("amd: XAAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX [%d], ri[%d], il[%d]", pl, ri, itemLevel)
+ 	// 		nextNode := buf.preds[pl]
+	// 		x.setNext(i, nextNode, false)
+	// 	} else {
+	// 		x.setNext(i, buf.succs[i], false)
+	// 	}
+	// }
 
 	// Set all next links for the node non-atomically
 	for i := 0; i <= int(itemLevel); i++ {
@@ -271,19 +311,39 @@ finished:
 	return x, true
 }
 
+func GetCallerName() string {
+	pc, _, _, ok := runtime.Caller(2)
+	details := runtime.FuncForPC(pc)
+	if ok && details != nil {
+		return details.Name()
+	}
+	return "gg"
+}
+
+// var cc int64
 func (s *Skiplist) softDelete(delNode *Node, sts *Stats) bool {
 	var marked bool
+
+	// c := atomic.AddInt64(&cc, 1)
 
 	targetLevel := delNode.Level()
 	for i := targetLevel; i >= 0; i-- {
 		next, deleted := delNode.getNext(i)
 		for !deleted {
-			if delNode.dcasNext(i, next, next, false, true) && i == 0 {
-				sts.AddInt64(&sts.softDeletes, 1)
-				marked = true
+			if delNode.dcasNext(i, next, next, false, true) {
+				if i == 0 {
+					sts.AddInt64(&sts.softDeletes, 1)
+					marked = true
+				}
+			} else if i == 0 {
+				// logging.Infof("amd: -----MARKING FAILED----- %d", c)
 			}
+
 			next, deleted = delNode.getNext(i)
 		}
+	}
+	if !marked {
+		// logging.Infof("amd: marking realllly failed------ %d", c)
 	}
 	return marked
 }
@@ -304,6 +364,7 @@ func (s *Skiplist) Delete(itm unsafe.Pointer, cmp CompareFn,
 
 func (s *Skiplist) DeleteNode(n *Node, cmp CompareFn,
 	buf *ActionBuffer, sts *Stats) bool {
+	// logging.Infof("amd: DeleteNode called from [%s] [%s]", GetCallerName(), n.Item())
 	token := s.barrier.Acquire()
 	defer s.barrier.Release(token)
 

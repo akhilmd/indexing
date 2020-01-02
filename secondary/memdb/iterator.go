@@ -1,6 +1,7 @@
 package memdb
 
 import (
+	"github.com/couchbase/indexing/secondary/logging"
 	"github.com/couchbase/indexing/secondary/memdb/skiplist"
 	"unsafe"
 )
@@ -34,7 +35,7 @@ func (it *Iterator) SeekFirst() {
 
 func (it *Iterator) Seek(bs []byte) {
 	itm := it.snap.db.newItem(bs, false)
-	it.iter.Seek(unsafe.Pointer(itm))
+	logging.Infof("amd: found %v ", it.iter.Seek(unsafe.Pointer(itm)))
 	it.skipUnwanted()
 }
 

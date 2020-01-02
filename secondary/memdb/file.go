@@ -22,7 +22,7 @@ func init() {
 
 type FileWriter interface {
 	Open(path string) error
-	WriteItem(*Item) error
+	WriteItem(*Item) (int64, error)
 	Checksum() uint32
 	Close() error
 }
@@ -73,10 +73,10 @@ func (f *rawFileWriter) Open(path string) error {
 	return err
 }
 
-func (f *rawFileWriter) WriteItem(itm *Item) error {
-	checksum, err := f.db.EncodeItem(itm, f.buf, f.w)
+func (f *rawFileWriter) WriteItem(itm *Item) (int64, error) {
+	checksum, err, sz := f.db.EncodeItem(itm, f.buf, f.w)
 	f.checksum = f.checksum ^ checksum
-	return err
+	return int64(sz), err
 }
 
 func (f *rawFileWriter) Checksum() uint32 {
@@ -86,7 +86,7 @@ func (f *rawFileWriter) Checksum() uint32 {
 func (f *rawFileWriter) Close() error {
 	terminator := &Item{}
 
-	if err := f.WriteItem(terminator); err != nil {
+	if _, err := f.WriteItem(terminator); err != nil {
 		return err
 	}
 
@@ -150,15 +150,15 @@ func (f *forestdbFileWriter) Open(path string) error {
 	return err
 }
 
-func (f *forestdbFileWriter) WriteItem(itm *Item) error {
+func (f *forestdbFileWriter) WriteItem(itm *Item) (int64, error) {
 	f.wbuf.Reset()
-	checksum, err := f.db.EncodeItem(itm, f.buf, &f.wbuf)
+	checksum, err, _ := f.db.EncodeItem(itm, f.buf, &f.wbuf)
 	if err == nil {
 		f.checksum = checksum
 		err = f.store.SetKV(f.wbuf.Bytes(), nil)
 	}
 
-	return err
+	return 0, err
 }
 
 func (f *forestdbFileWriter) Checksum() uint32 {

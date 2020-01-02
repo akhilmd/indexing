@@ -159,6 +159,7 @@ func (ab *AccessBarrier) Release(bs *BarrierSession) {
 		}
 	}
 }
+var FailProbConst = 2
 
 func (ab *AccessBarrier) FlushSession(ref unsafe.Pointer) {
 	if ab.active {

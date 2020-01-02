@@ -1002,7 +1002,7 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 
 		if err == nil {
 			dur := time.Since(t0)
-			logging.Infof("MemDBSlice Slice Id %v, Threads %d, IndexInstId %v, PartitionId %v created ondisk"+
+			logging.Infof("amd: MemDBSlice Slice Id %v, Threads %d, IndexInstId %v, PartitionId %v created ondisk"+
 				" snapshot %v. Took %v", mdb.id, concurrency, mdb.idxInstId, mdb.idxPartnId, dir, dur)
 			mdb.idxStats.diskSnapStoreDuration.Set(int64(dur / time.Millisecond))
 		} else {
