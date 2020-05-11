@@ -176,7 +176,7 @@ type watcherCallback func(string, c.IndexerId, c.IndexerId)
 var REQUEST_CHANNEL_COUNT = 1000
 
 var VALID_PARAM_NAMES = []string{"nodes", "defer_build", "retain_deleted_xattr",
-	"num_partition", "num_replica", "docKeySize", "secKeySize", "arrSize", "numDoc", "residentRatio"}
+	"num_partition", "num_replica", "docKeySize", "secKeySize", "arrSize", "numDoc", "residentRatio", "ttl"}
 
 ///////////////////////////////////////////////////////
 // Public function : MetadataProvider
@@ -1123,6 +1123,7 @@ func (o *MetadataProvider) PrepareIndexDefn(
 	var docKeySize uint64 = 0
 	var arrSize uint64 = 0
 	var residentRatio float64 = 0
+	var ttl uint32 = 0
 
 	version := o.GetIndexerVersion()
 	clusterVersion := o.GetClusterVersion()
@@ -1202,6 +1203,11 @@ func (o *MetadataProvider) PrepareIndexDefn(
 		}
 
 		numPartition, err, retry = o.getNumPartitionParam(partitionScheme, plan, version)
+		if err != nil {
+			return nil, err, retry
+		}
+
+		ttl, err, retry = o.getTTLParam(plan)
 		if err != nil {
 			return nil, err, retry
 		}
@@ -1317,6 +1323,7 @@ func (o *MetadataProvider) PrepareIndexDefn(
 		Nodes:              nodes,
 		Immutable:          immutable,
 		IsArrayIndex:       isArrayIndex,
+		TTL:                uint32(ttl),
 		NumReplica:         uint32(numReplica),
 		HashScheme:         c.CRC32,
 		NumPartitions:      uint32(numPartition),
@@ -1865,6 +1872,31 @@ func (o *MetadataProvider) getNumPartitionParam(scheme c.PartitionScheme, plan m
 	}
 
 	return numPartition, nil, false
+}
+
+func (o *MetadataProvider) getTTLParam(plan map[string]interface{}) (uint32, error, bool) {
+
+	ttl := uint32(0)
+
+	ttl2, ok := plan["ttl"].(float64)
+	if !ok {
+		ttl_str, ok := plan["ttl"].(string)
+		if ok {
+			var err error
+			ttl3, err := strconv.ParseUint(ttl_str, 10, 64)
+			if err != nil {
+				return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
+			}
+			ttl = uint32(ttl3)
+
+		} else if _, ok := plan["ttl"]; ok {
+			return 0, errors.New("Fails to create index.  Parameter ttl must be a positive integer value."), false
+		}
+	} else {
+		ttl = uint32(ttl2)
+	}
+
+	return ttl, nil, false
 }
 
 func (o *MetadataProvider) getReplicaParam(plan map[string]interface{}, version uint64) (int, error, bool) {
