@@ -234,9 +234,15 @@ func (s *IndexScanSource) Routine() error {
 		}
 
 		if !r.isPrimary {
+			e := secondaryIndexEntry(entry)
+			currTime := uint32(time.Now().Unix())
+
+			if e.isExpiryEncoded() && currTime > e.Expiry() {
+				return nil
+			}
+
 			if r.GroupAggr == nil ||
 				(r.GroupAggr != nil && !r.GroupAggr.OnePerPrimaryKey) {
-				e := secondaryIndexEntry(entry)
 				count = e.Count()
 			}
 		}
