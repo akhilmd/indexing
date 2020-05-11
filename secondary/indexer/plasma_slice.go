@@ -714,7 +714,7 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), szConf.allowLargeKeys)
 	entry, err := NewSecondaryIndexEntry(key, docid, mdb.idxDefn.IsArrayIndex,
-		1, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta, szConf)
+		1, 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta, szConf)
 	if err != nil {
 		logging.Errorf("plasmaSlice::insertSecIndex Slice Id %v IndexInstId %v PartitionId %v "+
 			"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
@@ -855,7 +855,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			item := indexEntriesToBeDeleted[i]
 			if item != nil { // nil item indicates it should be ignored
 				entry, err := NewSecondaryIndexEntry(item, docid, false,
-					oldKeyCount[i], mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], nil, szConf)
+					oldKeyCount[i], 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], nil, szConf)
 				common.CrashOnError(err)
 				// Add back
 				mdb.main[workerId].InsertKV(entry, nil)
@@ -870,7 +870,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			key := indexEntriesToBeAdded[i]
 			if key != nil { // nil item indicates it should be ignored
 				entry, err := NewSecondaryIndexEntry(key, docid, false,
-					newKeyCount[i], mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], meta, szConf)
+					newKeyCount[i], 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId][:0], meta, szConf)
 				common.CrashOnError(err)
 				// Delete back
 				entrySz := len(entry)
@@ -887,7 +887,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			var keyToBeDeleted []byte
 			mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(item), true)
 			if keyToBeDeleted, err = GetIndexEntryBytes3(item, docid, false, false,
-				oldKeyCount[i], mdb.idxDefn.Desc, mdb.encodeBuf[workerId], nil, szConf); err != nil {
+				oldKeyCount[i], 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], nil, szConf); err != nil {
 				rollbackDeletes(i - 1)
 				logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error forming entry "+
 					"to be added to main index. Skipping docid:%s Error: %v",
@@ -915,7 +915,7 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 			var keyToBeAdded []byte
 			mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(item), szConf.allowLargeKeys)
 			if keyToBeAdded, err = GetIndexEntryBytes2(item, docid, false, false,
-				newKeyCount[i], mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta, szConf); err != nil {
+				newKeyCount[i], 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta, szConf); err != nil {
 				rollbackDeletes(len(indexEntriesToBeDeleted) - 1)
 				rollbackAdds(i - 1)
 				logging.Errorf("plasmaSlice::insertSecArrayIndex SliceId %v IndexInstId %v PartitionId %v Error forming entry "+
@@ -1139,7 +1139,7 @@ func (mdb *plasmaSlice) deleteSecArrayIndexNoTx(docid []byte, workerId int) (nmu
 		var tmpBuf []byte
 		tmpBuf = resizeEncodeBuf(mdb.encodeBuf[workerId], len(item), true)
 		// TODO: Use method that skips size check for bug MB-22183
-		if keyToBeDeleted, err = GetIndexEntryBytes3(item, docid, false, false, keyCount[i],
+		if keyToBeDeleted, err = GetIndexEntryBytes3(item, docid, false, false, keyCount[i], 0,
 			mdb.idxDefn.Desc, tmpBuf, nil, szConf); err != nil {
 			common.CrashOnError(err)
 			logging.Errorf("plasmaSlice::deleteSecArrayIndex \n\tSliceId %v IndexInstId %v PartitionId %v Error from GetIndexEntryBytes2 "+
@@ -2594,7 +2594,7 @@ func entry2BackEntry(entry secondaryIndexEntry) []byte {
 func backEntry2entry(docid []byte, bentry []byte, buf []byte, sz keySizeConfig) []byte {
 	l := len(bentry)
 	count := int(binary.LittleEndian.Uint16(bentry[l-2 : l]))
-	entry, _ := NewSecondaryIndexEntry2(bentry[:l-2], docid, false, count, nil, buf[:0], false, nil, sz)
+	entry, _ := NewSecondaryIndexEntry2(bentry[:l-2], docid, false, count, 0, nil, buf[:0], false, nil, sz)
 	return entry.Bytes()
 }
 

@@ -296,7 +296,7 @@ func (fdb *fdbSlice) DecrRef() {
 func (fdb *fdbSlice) Insert(rawKey []byte, docid []byte, meta *MutationMeta) error {
 	szConf := fdb.updateSliceBuffers()
 	key, err := GetIndexEntryBytes(rawKey, docid, fdb.idxDefn.IsPrimary, fdb.idxDefn.IsArrayIndex,
-		1, fdb.idxDefn.Desc, meta, szConf)
+		1, 0, fdb.idxDefn.Desc, meta, szConf)
 	if err != nil {
 		return err
 	}
@@ -620,7 +620,7 @@ func (fdb *fdbSlice) insertSecArrayIndex(key []byte, rawKey []byte, docid []byte
 			}
 			// TODO: Ensure sufficient buffer size and use method that skips size check for bug MB-22183
 			if keyToBeDeleted, err = GetIndexEntryBytes3(item, docid, false, false,
-				oldKeyCount[i], fdb.idxDefn.Desc, tmpBuf, nil, fdb.keySzConf); err != nil {
+				oldKeyCount[i], 0, fdb.idxDefn.Desc, tmpBuf, nil, fdb.keySzConf); err != nil {
 				logging.Errorf("ForestDBSlice::insert SliceId %v IndexInstId %v Error forming entry "+
 					"to be deleted from main index. Skipping docid:%s Error: %v", fdb.id, fdb.idxInstId, logging.TagStrUD(docid), err)
 				return fdb.deleteSecArrayIndex(docid, workerId)
@@ -639,7 +639,7 @@ func (fdb *fdbSlice) insertSecArrayIndex(key []byte, rawKey []byte, docid []byte
 
 			// GetIndexEntryBytes2 validates size as well expand buffer if needed
 			if keyToBeAdded, err = GetIndexEntryBytes2(item, docid, false, false,
-				newKeyCount[i], fdb.idxDefn.Desc, (*tmpBufPtr)[:0], nil, fdb.keySzConf); err != nil {
+				newKeyCount[i], 0, fdb.idxDefn.Desc, (*tmpBufPtr)[:0], nil, fdb.keySzConf); err != nil {
 				logging.Errorf("ForestDBSlice::insert SliceId %v IndexInstId %v Error forming entry "+
 					"to be added to main index. Skipping docid:%s Error: %v", fdb.id, fdb.idxInstId, logging.TagStrUD(docid), err)
 				return fdb.deleteSecArrayIndex(docid, workerId)
@@ -870,7 +870,7 @@ func (fdb *fdbSlice) deleteSecArrayIndex(docid []byte, workerId int) (nmut int) 
 			tmpBuf = (*tmpBufPtr)[:0]
 		}
 
-		if keyToBeDeleted, err = GetIndexEntryBytes3(item, docid, false, false, keyCount[i],
+		if keyToBeDeleted, err = GetIndexEntryBytes3(item, docid, false, false, keyCount[i], 0,
 			fdb.idxDefn.Desc, tmpBuf, nil, fdb.keySzConf); err != nil {
 			fdb.checkFatalDbError(err)
 			logging.Errorf("ForestDBSlice::insert \n\tSliceId %v IndexInstId %v Error from GetIndexEntryBytes2 for entry to be deleted from main index %v", fdb.id, fdb.idxInstId, err)
