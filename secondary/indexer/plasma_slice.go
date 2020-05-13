@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"math"
 	"math/rand"
 	"os"
@@ -157,6 +158,8 @@ type plasmaSlice struct {
 	//This count is used to log message to console logs
 	//The count is reset when messages are logged to console
 	numKeysSkipped int32
+
+	canPurge int32
 }
 
 func newPlasmaSlice(storage_dir string, path string, sliceId SliceId, idxDefn common.IndexDefn,
@@ -243,6 +246,14 @@ func newPlasmaSlice(storage_dir string, path string, sliceId SliceId, idxDefn co
 	return slice, nil
 }
 
+// Calculate workerId from the docid by using CRC32 hash
+// CRC32 hash with AUTODIN II table and output right shifted by 16
+// Use (n & (numVbuckets - 1)) instead of (n % numVbuckets) since numVbuckets is power of 2
+func (mdb *plasmaSlice) getWorkerIdFromDocid(docid []byte) int {
+	numVbucketsM1 := uint32(mdb.sysconf["numVbuckets"].Int() - 1)
+	return int((crc32.Checksum(docid, crc32Autodin2) >> 16) & numVbucketsM1) % mdb.numWriters
+}
+
 func (slice *plasmaSlice) initStores() error {
 	var err error
 	cfg := plasma.DefaultConfig()
@@ -283,6 +294,13 @@ func (slice *plasmaSlice) initStores() error {
 		mode = plasma.DirectIO
 	}
 
+	defaultCmdQueueSize := slice.defaultCmdQueueSize()
+	defaultWorkerThresholdLen := uint64(0.6 * float64(defaultCmdQueueSize))
+	thresholdDelta := uint64(0.1 * float64(defaultCmdQueueSize))
+	workerThresholdLen := defaultWorkerThresholdLen
+	var lastSendTime time.Time
+	maxWaitNoSend := time.Duration(10 * time.Minute)
+
 	cfg.IOMode = mode
 
 	var mCfg, bCfg plasma.Config
@@ -307,6 +325,44 @@ func (slice *plasmaSlice) initStores() error {
 	mCfg.EnablePageBloomFilter = slice.sysconf["plasma.mainIndex.enablePageBloomFilter"].Bool()
 	mCfg.BloomFilterFalsePositiveRate = slice.sysconf["plasma.mainIndex.bloomFilterFalsePositiveRate"].Float64()
 	mCfg.BloomFilterExpectedMaxItems = slice.sysconf["plasma.mainIndex.bloomFilterExpectedMaxItems"].Uint64()
+
+	if slice.idxDefn.TTL > 0 {
+		mCfg.CompactCallback = func(key, value []byte) {
+			// do not enqueue if flush not in progress
+			if atomic.LoadInt32(&slice.canPurge) == 0 {
+				return
+			}
+
+			entry := secondaryIndexEntry(key)
+			expiry := entry.Expiry()
+
+			// check if expired
+			now := uint32(time.Now().Unix())
+			if now < expiry {
+				return
+			}
+
+			docid, _ := entry.ReadDocId([]byte{})
+			workerId := slice.getWorkerIdFromDocid(docid)
+			workerCmdCh := slice.cmdCh[workerId]
+			threshold := atomic.LoadUint64(&workerThresholdLen)
+
+			if uint64(len(workerCmdCh)) < threshold {
+				workerCmdCh <- indexMutation{op: opDelete, docid: docid, expiry: expiry}
+				atomic.AddInt64(&slice.qCount, 1)
+				lastSendTime = time.Now()
+
+				// reset to default if changed due to long waiting send
+				atomic.StoreUint64(&workerThresholdLen, defaultWorkerThresholdLen)
+			} else if time.Since(lastSendTime) > maxWaitNoSend {
+				threshold += thresholdDelta
+				if threshold > defaultCmdQueueSize {
+					threshold = defaultCmdQueueSize
+				}
+				atomic.StoreUint64(&workerThresholdLen, threshold)
+			}
+		}
+	}
 
 	bCfg.MaxDeltaChainLen = slice.sysconf["plasma.backIndex.maxNumPageDeltas"].Int()
 	bCfg.MaxPageItems = slice.sysconf["plasma.backIndex.pageSplitThreshold"].Int()
@@ -489,6 +545,7 @@ func (mdb *plasmaSlice) DecrRef() {
 }
 
 func (mdb *plasmaSlice) Insert(key []byte, docid []byte, meta *MutationMeta) error {
+	atomic.StoreInt32(&mdb.canPurge, 1)
 	op := opUpdate
 	if meta.firstSnap {
 		op = opInsert
@@ -508,6 +565,7 @@ func (mdb *plasmaSlice) Insert(key []byte, docid []byte, meta *MutationMeta) err
 }
 
 func (mdb *plasmaSlice) Delete(docid []byte, meta *MutationMeta) error {
+	atomic.StoreInt32(&mdb.canPurge, 1)
 	if !meta.firstSnap {
 		atomic.AddInt64(&mdb.qCount, 1)
 		mdb.idxStats.numDocsFlushQueued.Add(1)
@@ -547,7 +605,7 @@ loop:
 
 			case opDelete:
 				start = time.Now()
-				nmut = mdb.delete(icmd.docid, workerId)
+				nmut = mdb.delete(icmd.docid, workerId, icmd.expiry)
 				elapsed = time.Since(start)
 				mdb.totalFlushTime += elapsed
 
@@ -662,7 +720,7 @@ func (mdb *plasmaSlice) insert(key []byte, docid []byte, workerId int,
 	if mdb.isPrimary {
 		nmut = mdb.insertPrimaryIndex(key, docid, workerId)
 	} else if len(key) == 0 {
-		nmut = mdb.delete(docid, workerId)
+		nmut = mdb.delete(docid, workerId, 0)
 	} else {
 		if mdb.idxDefn.IsArrayIndex {
 			nmut = mdb.insertSecArrayIndex(key, docid, workerId, init, meta)
@@ -703,18 +761,23 @@ func (mdb *plasmaSlice) insertSecIndex(key []byte, docid []byte, workerId int, i
 	var ndel int
 	var changed bool
 
+	var expiry uint32
+	if mdb.idxDefn.TTL > 0 {
+		expiry = uint32(time.Now().Unix()) + mdb.idxDefn.TTL
+	}
+
 	szConf := mdb.updateSliceBuffers(workerId)
 
 	// The docid does not exist if the doc is initialized for the first time
 	if !init {
-		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId); !changed {
+		if ndel, changed = mdb.deleteSecIndex(docid, key, workerId, 0); !changed {
 			return 0
 		}
 	}
 
 	mdb.encodeBuf[workerId] = resizeEncodeBuf(mdb.encodeBuf[workerId], len(key), szConf.allowLargeKeys)
 	entry, err := NewSecondaryIndexEntry(key, docid, mdb.idxDefn.IsArrayIndex,
-		1, 0, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta, szConf)
+		1, expiry, mdb.idxDefn.Desc, mdb.encodeBuf[workerId], meta, szConf)
 	if err != nil {
 		logging.Errorf("plasmaSlice::insertSecIndex Slice Id %v IndexInstId %v PartitionId %v "+
 			"Skipping docid:%s (%v)", mdb.Id, mdb.idxInstId, mdb.idxPartnId, logging.TagStrUD(docid), err)
@@ -999,13 +1062,13 @@ func (mdb *plasmaSlice) insertSecArrayIndex(key []byte, docid []byte, workerId i
 	return nmut
 }
 
-func (mdb *plasmaSlice) delete(docid []byte, workerId int) int {
+func (mdb *plasmaSlice) delete(docid []byte, workerId int, expiry uint32) int {
 	var nmut int
 
 	if mdb.isPrimary {
 		nmut = mdb.deletePrimaryIndex(docid, workerId)
 	} else if !mdb.idxDefn.IsArrayIndex {
-		nmut, _ = mdb.deleteSecIndex(docid, nil, workerId)
+		nmut, _ = mdb.deleteSecIndex(docid, nil, workerId, expiry)
 	} else {
 		nmut = mdb.deleteSecArrayIndex(docid, workerId)
 	}
@@ -1045,7 +1108,7 @@ func (mdb *plasmaSlice) deletePrimaryIndex(docid []byte, workerId int) (nmut int
 	return 0
 }
 
-func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId int) (ndel int, changed bool) {
+func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId int, expiry uint32) (ndel int, changed bool) {
 
 	// Delete entry from back and main index if present
 	mdb.back[workerId].Begin()
@@ -1062,6 +1125,13 @@ func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId
 			return 0, false
 		}
 
+		entry := backEntry2entry(docid, backEntry, buf, mdb.keySzConf[workerId])
+
+		// Delete the entries only if the expiry is the same
+		if expiry > 0 && secondaryIndexEntry(entry).Expiry() != expiry {
+			return 0, false
+		}
+
 		t0 := time.Now()
 		atomic.AddInt64(&mdb.delete_bytes, int64(len(docid)))
 		mdb.main[workerId].Begin()
@@ -1069,7 +1139,6 @@ func (mdb *plasmaSlice) deleteSecIndex(docid []byte, compareKey []byte, workerId
 		mdb.back[workerId].DeleteKV(docid)
 		mdb.idxStats.backstoreRawDataSize.Add(0 - int64(len(docid)+len(backEntry)))
 
-		entry := backEntry2entry(docid, backEntry, buf, mdb.keySzConf[workerId])
 		entrySz := len(entry)
 		mdb.main[workerId].DeleteKV(entry)
 		mdb.idxStats.Timings.stKVDelete.Put(time.Since(t0))
@@ -1763,6 +1832,7 @@ func (mdb *plasmaSlice) SetLastRollbackTs(ts *common.TsVbuuid) {
 //This method provides a mechanism to wait till internal
 //queue is empty.
 func (mdb *plasmaSlice) waitPersist() {
+	atomic.StoreInt32(&mdb.canPurge, 0)
 
 	if !mdb.checkAllWorkersDone() {
 		//every SLICE_COMMIT_POLL_INTERVAL milliseconds,
@@ -2576,25 +2646,26 @@ func (s *plasmaSnapshot) iterEqualKeys(k IndexKey, it *plasma.MVCCIterator,
 func entry2BackEntry(entry secondaryIndexEntry) []byte {
 	buf := entry.Bytes()
 	kl := entry.lenKey()
-	if entry.isCountEncoded() {
-		// Store count
-		dl := entry.lenDocId()
-		copy(buf[kl:kl+2], buf[kl+dl:kl+dl+2])
-		return buf[:kl+2]
-	} else {
-		// Set count to 0
-		buf[kl] = 0
-		buf[kl+1] = 0
+
+	var op [6]byte
+
+	if entry.isExpiryEncoded() {
+		binary.LittleEndian.PutUint32(op[:4], entry.Expiry())
 	}
 
-	return buf[:kl+2]
+	if entry.isCountEncoded() {
+		binary.LittleEndian.PutUint16(op[4:], uint16(entry.Count()))
+	}
+
+	return append(buf[:kl], op[:]...)
 }
 
 // Reformat secondary key to entry
 func backEntry2entry(docid []byte, bentry []byte, buf []byte, sz keySizeConfig) []byte {
 	l := len(bentry)
+	expiry := binary.LittleEndian.Uint32(bentry[l-6 : l-2])
 	count := int(binary.LittleEndian.Uint16(bentry[l-2 : l]))
-	entry, _ := NewSecondaryIndexEntry2(bentry[:l-2], docid, false, count, 0, nil, buf[:0], false, nil, sz)
+	entry, _ := NewSecondaryIndexEntry2(bentry[:l-2], docid, false, count, expiry, nil, buf[:0], false, nil, sz)
 	return entry.Bytes()
 }
 
@@ -2603,8 +2674,8 @@ func hasEqualBackEntry(key []byte, bentry []byte) bool {
 		return false
 	}
 
-	// Ignore 2 byte count for comparison
-	return bytes.Equal(key, bentry[:len(bentry)-2])
+	// Ignore 6 bytes expiry and count for comparison
+	return bytes.Equal(key, bentry[:len(bentry)-6])
 }
 
 ////////////////////////////////////////////////////////////
