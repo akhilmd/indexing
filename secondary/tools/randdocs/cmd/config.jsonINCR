@@ -1,13 +1,13 @@
 {
-    "ClusterAddr": "127.0.0.1:809",
+    "ClusterAddr": "127.0.0.1:8091",
     "Bucket": "default",
-    "NumDocs": 20000000,
+    "NumDocs": 5000000,
     "DocIdLen": 25,
     "FieldSize": 200,
     "ArrayLen": 1,
     "JunkFieldSize": 1,
     "Iterations": 1,
     "Threads": 10,
-    "DocNumOffset": 0,
+    "DocNumOffset": 18000000,
     "UseRandDocID": true
 }

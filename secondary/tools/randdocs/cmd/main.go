@@ -31,5 +31,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	randdocs.Run(cfg)
+	pp, err := json.MarshalIndent(cfg, "", "    ")
+	if err != nil {
+		fmt.Printf("Error occured: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Running Config:\n", string(pp))
+
+	if err = randdocs.Run(cfg); err != nil {
+		fmt.Printf("Error occured: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Done")
 }

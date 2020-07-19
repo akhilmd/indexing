@@ -2,6 +2,7 @@ package randdocs
 
 import "crypto/rand"
 import rnd "math/rand"
+// import "crypto/sha512"
 import "crypto/md5"
 import "fmt"
 import "sync"
@@ -52,8 +53,10 @@ func Run(cfg Config) error {
 				for i := 0; i < cfg.NumDocs/cfg.Threads; i++ {
 					docid := fmt.Sprintf("doc-%0*d", cfg.DocIdLen, i+offset+cfg.DocNumOffset)
 					if cfg.UseRandDocID {
+						// key := sha512.Sum512([]byte(docid))
 						key := md5.Sum([]byte(docid))
-						docid = string(key[:])
+						docid = fmt.Sprintf("%x", key)
+						// fmt.Println(docid)
 					}
 
 					value := make(map[string]interface{})

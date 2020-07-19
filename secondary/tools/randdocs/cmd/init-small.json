@@ -1,7 +1,7 @@
 {
-    "ClusterAddr": "127.0.0.1:809",
+    "ClusterAddr": "127.0.0.1:8091",
     "Bucket": "default",
-    "NumDocs": 20000000,
+    "NumDocs": 2000000,
     "DocIdLen": 25,
     "FieldSize": 200,
     "ArrayLen": 1,
