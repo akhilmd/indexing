@@ -44,6 +44,10 @@ func (m *MemDB) newFileWriter(t FileType) FileWriter {
 	return w
 }
 
+func (m *MemDB) NewFileReader(t FileType, ver int) FileReader {
+	return m.newFileReader(t, ver)
+}
+
 func (m *MemDB) newFileReader(t FileType, ver int) FileReader {
 	var r FileReader
 	if t == RawdbFile {

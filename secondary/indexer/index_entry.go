@@ -112,6 +112,14 @@ func (e *primaryIndexEntry) String() string {
 // The MSB of right byte of docid length indicates whether count is encoded or not
 type secondaryIndexEntry []byte
 
+func ConvertToSIE(bs []byte) secondaryIndexEntry {
+	return secondaryIndexEntry(bs)
+}
+
+func GetEncoder() *collatejson.Codec {
+	return jsonEncoder
+}
+
 func NewSecondaryIndexEntry(key []byte, docid []byte, isArray bool, count int,
 	desc []bool, buf []byte, meta *MutationMeta, sz keySizeConfig) (secondaryIndexEntry, error) {
 

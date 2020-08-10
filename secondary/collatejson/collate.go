@@ -309,6 +309,11 @@ func (codec *Codec) code2json(code, text []byte) ([]byte, []byte, error) {
 	var ts, remaining, datum []byte
 	var err error
 
+	// if code[0] == 250 {
+	// 	// Set to TypeString
+	// 	code[0] = 6
+	// }
+
 	switch code[0] {
 	case Terminator:
 		remaining = code
@@ -441,6 +446,8 @@ func (codec *Codec) code2json(code, text []byte) ([]byte, []byte, error) {
 		}
 		remaining = code[1:] // remove Terminator
 		text = append(text, '}')
+	default:
+		panic(fmt.Sprintf("unknown type: [%v]", code[0]))
 	}
 	return text, remaining, err
 }
