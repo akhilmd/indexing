@@ -395,6 +395,7 @@ func (slice *plasmaSlice) initStores() error {
 
 		slice.mainstore, mErr = plasma.New2(mCfg, slice.idxDefn.IndexOnCollection(), slice.newBorn)
 		if mErr != nil {
+			panic(mErr)
 			mErr = fmt.Errorf("Unable to initialize %s, err = %v", mCfg.File, mErr)
 			return
 		}

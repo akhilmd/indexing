@@ -2826,7 +2826,8 @@ func (cv ConfigValue) Bool() bool {
 func plasmaLogSegSize() int {
 	switch runtime.GOOS {
 	case "linux":
-		return 4 * 1024 * 1024 * 1024
+		// return 4 * 1024 * 1024 * 1024
+		return 5 * 1024 * 1024
 	default:
 		return 512 * 1024 * 1024
 	}
