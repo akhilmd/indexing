@@ -222,19 +222,29 @@ func TestLoadStoreDisk(t *testing.T) {
 	os.RemoveAll("db.dump")
 	var wg sync.WaitGroup
 	db := NewWithConfig(testConf)
-	defer db.Close()
-	n := 1000000
+	
+	n := 1000
 	t0 := time.Now()
-	for i := 0; i < runtime.GOMAXPROCS(0); i++ {
+	for i := 0; i < 1; i++ {
 		wg.Add(1)
-		go doInsert(db, &wg, n/runtime.GOMAXPROCS(0), true, true)
+		go doInsert(db, &wg, n/1, false, false)
 	}
 	wg.Wait()
 	fmt.Printf("Inserting %v items took %v\n", n, time.Since(t0))
 	snap0, _ := db.NewSnapshot()
-	defer snap0.Close()
+	snap0.Close()
 	snap, _ := db.NewSnapshot()
-	fmt.Println(db.DumpStats())
+
+	w := db.NewWriter()
+	for i:=400;i<800;i++ {
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, uint64(i))
+		if !w.Delete(buf) {
+			panic("del fail")
+		}
+	}
+	snap2, _ := db.NewSnapshot()
+	snap2.Close()
 
 	t0 = time.Now()
 	err := db.StoreToDisk("db.dump", snap, 8, nil)
@@ -245,11 +255,12 @@ func TestLoadStoreDisk(t *testing.T) {
 	fmt.Printf("Storing to disk took %v\n", time.Since(t0))
 
 	snap.Close()
+	db.Close()
+
 	db = NewWithConfig(testConf)
-	defer db.Close()
+	
 	t0 = time.Now()
 	snap, err = db.LoadFromDisk("db.dump", 8, nil)
-	defer snap.Close()
 	if err != nil {
 		t.Errorf("Expected no error. got=%v", err)
 	}
@@ -264,7 +275,9 @@ func TestLoadStoreDisk(t *testing.T) {
 	if count != n {
 		t.Errorf("Count mismatch on snapshot. Expected %d, got %d", n, count)
 	}
-	fmt.Println(db.DumpStats())
+
+	snap.Close()
+	db.Close()
 }
 
 func TestStoreDiskShutdown(t *testing.T) {

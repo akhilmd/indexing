@@ -584,6 +584,7 @@ func (s *Snapshot) Open() bool {
 }
 
 func (s *Snapshot) Close() {
+	fmt.Printf("Snap Close %d %d %p %p\n", s.sn, s.refCount, s.db, s)
 	newRefcount := atomic.AddInt32(&s.refCount, -1)
 	if newRefcount == 0 {
 		buf := s.db.snapshots.MakeBuf()
@@ -661,10 +662,13 @@ func (m *MemDB) collectionWorker(w *Writer) {
 				close(w.dwrCtx.closed)
 				return
 			}
+			hmnh := 0
 			for n := gclist; n != nil; n = n.GClink {
 				w.doDeltaWrite((*Item)(n.Item()))
 				m.store.DeleteNode(n, m.insCmp, buf, &w.slSts2)
+				hmnh++
 			}
+			fmt.Println("collectionWorkerrrr", hmnh)
 
 			m.store.Stats.Merge(&w.slSts2)
 
@@ -708,6 +712,8 @@ func (m *MemDB) collectDead() {
 		if sn.sn != m.GetLastGCSn()+1 {
 			return
 		}
+
+		fmt.Println("collectDead", sn.sn)
 
 		atomic.StoreUint32(&m.lastGCSn, sn.sn)
 		m.gcchan <- sn.gclist
@@ -903,6 +909,24 @@ func (m *MemDB) StoreToDisk(dir string, snap *Snapshot, concurr int, itmCallback
 
 	m.Unlock()
 
+	// Create a placeholder snapshot object. We are decoupled from holding snapshot items
+	// The fakeSnap object is to use the same iterator without any special handling for
+	// usual refcount based freeing.
+	snap.Close()
+	fmt.Println("::::::")
+	snapClosed = true
+	fakeSnap := *snap
+	fakeSnap.refCount = 1
+	snap = &fakeSnap
+
+	time.Sleep(time.Second * 2)
+
+	if itmCallback != nil {
+		itmCallback(nil) // Throttle the max persistence threads
+	}
+
+	os.RemoveAll(dir)
+
 	manifestdir := dir
 	datadir := filepath.Join(dir, "data")
 	os.MkdirAll(datadir, 0755)
@@ -961,16 +985,6 @@ func (m *MemDB) StoreToDisk(dir string, snap *Snapshot, concurr int, itmCallback
 			return err
 		}
 
-		// Create a placeholder snapshot object. We are decoupled from holding snapshot items
-		// The fakeSnap object is to use the same iterator without any special handling for
-		// usual refcount based freeing.
-
-		snap.Close()
-		snapClosed = true
-		fakeSnap := *snap
-		fakeSnap.refCount = 1
-		snap = &fakeSnap
-
 		defer func() {
 			if err = m.changeDeltaWrState(dwStateTerminate, nil, nil); err == nil {
 				bs, _ := json.Marshal(deltaFiles)
@@ -994,10 +1008,6 @@ func (m *MemDB) StoreToDisk(dir string, snap *Snapshot, concurr int, itmCallback
 		w := writers[shard]
 		if err := w.WriteItem(itm); err != nil {
 			return err
-		}
-
-		if itmCallback != nil {
-			itmCallback(&ItemEntry{itm: itm, n: nil})
 		}
 
 		return nil

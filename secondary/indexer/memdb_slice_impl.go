@@ -958,7 +958,6 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 		dir := newSnapshotPath(mdb.path)
 		tmpdir := filepath.Join(mdb.path, tmpDirName)
 		manifest := filepath.Join(tmpdir, "manifest.json")
-		os.RemoveAll(tmpdir)
 		mdb.confLock.RLock()
 		maxThreads := mdb.sysconf["settings.moi.persistence_threads"].Int()
 		total := atomic.LoadInt64(&totalMemDBItems)
@@ -974,9 +973,6 @@ func (mdb *memdbSlice) doPersistSnapshot(s *memdbSnapshot) {
 		// and will wait for this group to complete.
 		// To ensure that CPU isn't overwhelmed, we limit how many such groups
 		// can run in parallel.
-		// To avoid holding a snapshot we must limit the caller via the item callback,
-		// But as this callback is invoked per item, per writer,
-		// it is enough to throttle just one writer go routine of each batch.
 		var throttleToken int64
 		limitWriterThreads := func(itm *memdb.ItemEntry) {
 			if atomic.CompareAndSwapInt64(&throttleToken, 0, 1) {
