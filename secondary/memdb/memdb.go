@@ -649,7 +649,7 @@ func (m *MemDB) FreeNodesConcurrent(concurr int) error {
 			pivotNodes = append(pivotNodes, itr.GetNode())
 
 			// Skip start itm so that it can be used to detect end
-			itr.Next()
+			itr.NextForFree()
 		} else {
 			itm := (*Item)(startItm)
 			return fmt.Errorf("Couldn't seek to valid start itm itm=[%v]", itm)
@@ -665,7 +665,7 @@ func (m *MemDB) FreeNodesConcurrent(concurr int) error {
 
 			if it.Valid() {
 				lastNode = it.GetNode()
-				it.Next()
+				it.NextForFree()
 			}
 
 			for lastNode != nil {
@@ -675,7 +675,7 @@ func (m *MemDB) FreeNodesConcurrent(concurr int) error {
 
 				if it.Valid() {
 					lastNode = it.GetNode()
-					it.Next()
+					it.NextForFree()
 				}
 
 				if end != nil && m.iterCmp(lastNode.Item(), end) >= 0 {
