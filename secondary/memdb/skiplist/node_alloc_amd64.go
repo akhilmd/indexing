@@ -258,7 +258,7 @@ func init() {
 	l := int(nodeTypes[32].Size())
 	freeBlockContent = make([]byte, l)
 	for i := 0; i < l; i++ {
-		freeBlockContent[i] = 0xdd
+		freeBlockContent[i] = 0xdf
 	}
 }
 

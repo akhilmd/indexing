@@ -67,6 +67,11 @@ func (n *Node) setNext(level int, ptr *Node, deleted bool) {
 	}
 }
 
+func (n *Node) GetNext(level int) (*Node) {
+	k, _ := n.getNext(level)
+	return k
+}
+
 func (n *Node) getNext(level int) (*Node, bool) {
 	nodeRefAddr := uintptr(unsafe.Pointer(n)) + nodeHdrSize + nodeRefSize*uintptr(level)
 	wordAddr := (*uint64)(unsafe.Pointer(nodeRefAddr + uintptr(7)))

@@ -625,50 +625,106 @@ func (m *MemDB) FreeNodesConcurrent(concurr int) error {
 	var pivotNodes []*skiplist.Node
 	var wg sync.WaitGroup
 
-	// Get pivot items
-	pivotItems := append([]unsafe.Pointer{nil}, m.store.GetRangeSplitItems(concurr)...)
-	pivotItems = append(pivotItems, nil)
+	var pivotItems []unsafe.Pointer
+
+	func() {
+		barrier := m.store.GetAccesBarrier()
+		token := barrier.Acquire()
+		defer barrier.Release(token)
+
+		pivotItems = m.store.GetRangeSplitItems(concurr)
+		//fmt.Println("PIVOTS", pivotItems)
+	}()
+
+	// Add iterator from the start
+	buf := m.store.MakeBuf()
+	bufs = append(bufs, buf)
+
+	itr := m.store.NewIterator(m.iterCmp, buf)
+	itr.SeekFirst()
+
+	if !itr.Valid() {
+		return fmt.Errorf("K")
+	}
+
+	pivotNodes = append(pivotNodes, itr.GetNode())
+	itr.NextForFree()
+	itrs = append(itrs, itr)
 
 	// Init buffers and iterators for the pivot items
-	for _, startItm := range pivotItems[:len(pivotItems)-1] {
+	for _, startItm := range pivotItems {
 		b := m.store.MakeBuf()
-		bufs = append(bufs, b)
-
 		itr := m.store.NewIterator(m.iterCmp, b)
-		itrs = append(itrs, itr)
 
-		if startItm == nil {
-			itr.SeekFirst()
-		} else if !itr.Seek(startItm) {
-			itm :=  (*Item)(startItm)
+		cleanup := func() {
+			itr.Close()
+			m.store.FreeBuf(b)
+		}
+
+		// Can rangeSplitItms give nil? happens when head is selected as a split?
+		// Can this happen in the edge cases?
+
+		if itr.Seek(startItm) {
+			if itr.Valid() {
+				currItrStartItm := itr.GetNode().Item()
+				prevItrStartItm := itrs[len(itrs)-1].GetNode().Item()
+
+				if m.iterCmp(currItrStartItm, prevItrStartItm) >= 0 {
+					bufs = append(bufs, b)
+					itrs = append(itrs, itr)
+
+					pivotNodes = append(pivotNodes, itr.GetNode())
+					itr.NextForFree()
+				} else {
+					cleanup()
+				}
+
+			} else {
+				cleanup()
+
+				itm := (*Item)(startItm)
+				return fmt.Errorf("Couldn't seek to valid start itm itm=[%v]", itm)
+			}
+		} else {
+			cleanup()
+
+			itm := (*Item)(startItm)
 			return fmt.Errorf("Couldn't seek to pivot itm itm=[%v]", itm)
 		}
-
-		if itr.Valid() {
-			// Remember start itm so that it can be freed in the end
-			pivotNodes = append(pivotNodes, itr.GetNode())
-
-			// Skip start itm so that it can be used to detect end
-			itr.NextForFree()
-		} else {
-			itm := (*Item)(startItm)
-			return fmt.Errorf("Couldn't seek to valid start itm itm=[%v]", itm)
-		}
 	}
+
+	pivotNodes = append(pivotNodes, nil)
+
+	if len(pivotNodes) != 1 + len(itrs) {
+		panic("DOES NOT MATCH")
+	}
+
+	//fmt.Println("Nodes", pivotNodes)
+	//fmt.Println("Itrs", itrs, itrs[0].GetNode())
 
 	// Free nodes manually starting from pivot item in separate goroutines
 	for i, itr := range itrs {
 		wg.Add(1)
-		go func(it *skiplist.Iterator, end unsafe.Pointer) {
+		func(it *skiplist.Iterator, endNode *skiplist.Node) {
 			defer wg.Done()
+			var end unsafe.Pointer
+			if endNode != nil {
+				end = endNode.Item()
+			}
+
 			var lastNode *skiplist.Node
 
 			if it.Valid() {
 				lastNode = it.GetNode()
+				//fmt.Println("First lastNode", lastNode)
 				it.NextForFree()
 			}
 
 			for lastNode != nil {
+				if end != nil && m.iterCmp(lastNode.Item(), end) >= 0 {
+					return
+				}
+
 				m.freeItem((*Item)(lastNode.Item()))
 				m.store.FreeNode(lastNode, &m.store.Stats)
 				lastNode = nil
@@ -677,17 +733,13 @@ func (m *MemDB) FreeNodesConcurrent(concurr int) error {
 					lastNode = it.GetNode()
 					it.NextForFree()
 				}
-
-				if end != nil && m.iterCmp(lastNode.Item(), end) >= 0 {
-					return
-				}
 			}
-		}(itr, pivotItems[i+1])
+		}(itr, pivotNodes[i+1])
 	}
 	wg.Wait()
 
 	// Free pivot nodes
-	for _, node := range pivotNodes {
+	for _, node := range pivotNodes[:len(pivotNodes)-1] {
 		itm := node.Item()
 
 		m.freeItem((*Item)(itm))

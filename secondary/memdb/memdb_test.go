@@ -289,12 +289,14 @@ func TestConcurrentLoadCloseFragmentation(t *testing.T) {
 
 	db := NewWithConfig(testConf)
 
+	//runtime.GOMAXPROCS(1)
 	for i := 0; i < runtime.GOMAXPROCS(0); i++ {
 		wg.Add(1)
 		go doInsert(db, &wg, n/runtime.GOMAXPROCS(0), true, true)
 	}
 	wg.Wait()
 	fmt.Printf("Done Inserting %v items\n", n)
+	//fmt.Println(db.DumpStats())
 
 	initialFrag := frag()
 
@@ -315,6 +317,8 @@ func TestConcurrentLoadCloseFragmentation(t *testing.T) {
 		db.Close2(concurr)
 		fmt.Println("Done Closing")
 	}()
+	wg.Wait()
+	return
 
 	db2 := NewWithConfig(testConf)
 	defer db2.Close2(concurr)
