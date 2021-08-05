@@ -318,6 +318,7 @@ func (slice *plasmaSlice) initStores() error {
 	cfg.AutoTuneDiskFullTimeLimit = slice.sysconf["plasma.AutoTuneDiskFullTimeLimit"].Int()
 	cfg.AutoTuneAvailDiskLimit = slice.sysconf["plasma.AutoTuneAvailDiskLimit"].Float64()
 	cfg.Compression = slice.sysconf["plasma.compression"].String()
+	//cfg.MemCompression = slice.sysconf["plasma.memoryCompression"].String()
 	cfg.MaxPageSize = slice.sysconf["plasma.MaxPageSize"].Int()
 	cfg.AutoLSSCleaning = !slice.sysconf["settings.compaction.plasma.manual"].Bool()
 	cfg.EnforceKeyRange = slice.sysconf["plasma.enforceKeyRange"].Bool()
@@ -2142,18 +2143,18 @@ func (mdb *plasmaSlice) Compact(abortTime time.Time, minFrag int) error {
 	go func() {
 		defer wg.Done()
 
-		if mdb.mainstore.AutoLSSCleaning {
+		if true {
 			return
 		}
 
-		shouldClean := func() bool {
-			if mdb.IsSoftDeleted() || mdb.IsSoftClosed() {
-				return false
-			}
-			return mdb.mainstore.TriggerLSSCleaner(minFrag, mdb.mainstore.LSSCleanerMinSize)
-		}
+		//shouldClean := func() bool {
+		//	if mdb.IsSoftDeleted() || mdb.IsSoftClosed() {
+		//		return false
+		//	}
+		//	return mdb.mainstore.TriggerLSSCleaner(minFrag, mdb.mainstore.LSSCleanerMinSize)
+		//}
 
-		err = mdb.mainstore.CleanLSS(shouldClean)
+		//err = mdb.mainstore.CleanLSS(shouldClean)
 	}()
 
 	if !mdb.isPrimary && mdb.backstore != nil {
@@ -2161,18 +2162,18 @@ func (mdb *plasmaSlice) Compact(abortTime time.Time, minFrag int) error {
 		go func() {
 			defer wg.Done()
 
-			if mdb.backstore.AutoLSSCleaning {
+			if true {
 				return
 			}
 
-			shouldClean := func() bool {
-				if mdb.IsSoftDeleted() || mdb.IsSoftClosed() {
-					return false
-				}
-				return mdb.backstore.TriggerLSSCleaner(minFrag, mdb.backstore.LSSCleanerMinSize)
-			}
-
-			err = mdb.backstore.CleanLSS(shouldClean)
+			//shouldClean := func() bool {
+			//	if mdb.IsSoftDeleted() || mdb.IsSoftClosed() {
+			//		return false
+			//	}
+			//	return mdb.backstore.TriggerLSSCleaner(minFrag, mdb.backstore.LSSCleanerMinSize)
+			//}
+			//
+			//err = mdb.backstore.CleanLSS(shouldClean)
 		}()
 	}
 
@@ -2791,7 +2792,6 @@ func (s *plasmaSnapshot) Iterate(ctx IndexReaderContext, low, high IndexKey, inc
 
 	var entry IndexEntry
 	var err error
-	t0 := time.Now()
 
 	reader := ctx.(*plasmaReaderCtx)
 
@@ -2826,8 +2826,15 @@ func (s *plasmaSnapshot) Iterate(ctx IndexReaderContext, low, high IndexKey, inc
 			}
 		}
 	}
-	s.slice.idxStats.Timings.stNewIterator.Put(time.Since(t0))
 
+	//var	cbCnt int64
+	//callback = func(entry []byte) error {
+	//	cbCnt++
+	//	return nil
+	//}
+	//callback = nil
+
+	t0 := time.Now()
 loop:
 	for it.Valid() {
 		itm := it.Key()
@@ -2853,6 +2860,8 @@ loop:
 			return err
 		}
 	}
+
+	s.slice.idxStats.Timings.stNewIterator.Put(time.Since(t0))
 
 	return nil
 }

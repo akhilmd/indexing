@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/couchbase/cbauth"
@@ -78,6 +79,15 @@ func main() {
 
 	cfg, err := parseConfig(*config)
 	handleError(err)
+
+	fmt.Println()
+	if js, err := json.MarshalIndent(cfg, "", "    "); err == nil {
+		fmt.Println("Read config from file: ", string(js))
+	} else {
+		fmt.Printf("Error marhalling parsed cfg\nerr=[%v]\ncfg=[%v]\n", err, cfg)
+	}
+	fmt.Println()
+
 
 	var statsW io.Writer
 	if *statsfile != "" {

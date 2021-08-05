@@ -1246,6 +1246,13 @@ var SystemConfig = Config{
 		false, // mutable
 		true,  // case-sensitive
 	},
+	"indexer.plasma.memoryCompression": ConfigValue{
+		"snappy",
+		"Compression algorithm for in memory compression",
+		"snappy",
+		false, // mutable
+		true,  // case-sensitive
+	},
 	"indexer.plasma.persistenceCPUPercent": ConfigValue{
 		50,
 		"Percentage of cpu used for persistence",
