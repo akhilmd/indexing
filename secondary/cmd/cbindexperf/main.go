@@ -115,7 +115,9 @@ func main() {
 
 	rate := int(float64(totalRows) / res.Duration)
 
-	fmt.Printf("Throughput = %d rows/sec\n", rate)
+	fmt.Printf("Total Rows     = %d rows\n", totalRows)
+	fmt.Printf("Total Duration = %v \n", res.Duration)
+	fmt.Printf("Throughput     = %d rows/sec\n", rate)
 
 	os.Remove(*outfile)
 	err = writeResults(res, *outfile)

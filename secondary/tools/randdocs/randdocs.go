@@ -114,7 +114,7 @@ func Run(cfg Config) error {
 			}(thr * cfg.NumDocs / cfg.Threads)
 		}
 		wg.Wait()
-		fmt.Println("Done setting docs:", cnt, "at", cnt/(1+int64(time.Since(fullStart).Seconds())))
+		fmt.Println("Done setting docs:", cnt, "at", cnt/(1+int64(time.Since(fullStart).Seconds())), "itr", itr)
 	}
 
 	return err

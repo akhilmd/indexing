@@ -2,15 +2,14 @@ package main
 
 import (
 	"fmt"
+	qclient "github.com/couchbase/indexing/secondary/queryport/client"
 	"math/rand"
 	"strconv"
-	"time"
-
-	qclient "github.com/couchbase/indexing/secondary/queryport/client"
 )
 
 func SeedInit() {
-	rand.Seed(time.Now().UnixNano())
+	//rand.Seed(time.Now().UnixNano())
+	rand.Seed(1)
 }
 
 type ScanRange interface {
