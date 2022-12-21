@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/couchbase/cbauth/service"
@@ -44,11 +46,20 @@ type PauseServiceManager struct {
 	// bucketStatesMu protects bucketStates
 	bucketStatesMu sync.RWMutex
 
+	supvMsgch MsgChannel
+
 	// tasks is the set of Pause-Resume tasks that are running, if any, mapped by taskId
 	tasks map[string]*taskObj
 
 	// tasksMu protects tasks
 	tasksMu sync.RWMutex
+
+	// Indexer config
+	config common.ConfigHolder
+
+	pauseTokensByTaskId map[string]*PauseToken
+
+	nodeInfo *service.NodeInfo
 }
 
 // NewPauseServiceManager is the constructor for the PauseServiceManager class.
@@ -57,7 +68,7 @@ type PauseServiceManager struct {
 //   mux - Indexer's HTTP server
 //   httpAddr - host:port of the local node for Index Service HTTP calls
 func NewPauseServiceManager(genericMgr *GenericServiceManager, mux *http.ServeMux,
-	httpAddr string) *PauseServiceManager {
+	httpAddr string, config common.Config, supvMsgch MsgChannel, nodeInfo *service.NodeInfo) *PauseServiceManager {
 
 	m := &PauseServiceManager{
 		genericMgr: genericMgr,
@@ -65,7 +76,13 @@ func NewPauseServiceManager(genericMgr *GenericServiceManager, mux *http.ServeMu
 
 		bucketStates: make(map[string]bucketStateEnum),
 		tasks:        make(map[string]*taskObj),
+
+		supvMsgch: supvMsgch,
+		nodeInfo:  nodeInfo,
+
+		pauseTokensByTaskId: make(map[string]*PauseToken),
 	}
+	m.config.Store(config)
 
 	// Save the singleton
 	SetPauseMgr(m)
@@ -205,10 +222,13 @@ func (this taskEnum) String() string {
 // service.TaskTypeXxx constants (cbauth/service/interface.go).
 func (this taskEnum) StringNs() string {
 	switch this {
+
 	case task_PAUSE:
-		return "task-pause" // kjc not defined in interface.go yet
+		return string(service.TaskTypeBucketPause)
+
 	case task_RESUME:
-		return "task-resume" // kjc not defined in interface.go yet
+		return string(service.TaskTypeBucketResume)
+
 	default:
 		return fmt.Sprintf("undefinedTaskEnum_%v", int(this))
 	}
@@ -219,7 +239,8 @@ func (this taskEnum) StringNs() string {
 type statusEnum int
 
 const (
-	status_RUNNING statusEnum = iota
+	status_PREPARED statusEnum = iota
+	status_RUNNING
 	status_FAILED
 	status_CANNOT_RESUME // Resume (unhibernate) dry run says cannot resume; no error in dry run
 )
@@ -227,6 +248,8 @@ const (
 // String converter for statusEnum type.
 func (this statusEnum) String() string {
 	switch this {
+	case status_PREPARED:
+		return "Prepared"
 	case status_RUNNING:
 		return "Running"
 	case status_FAILED:
@@ -242,7 +265,7 @@ func (this statusEnum) String() string {
 // service.TaskStatusXxx constants (cbauth/service/interface.go).
 func (this statusEnum) StringNs() string {
 	switch this {
-	case status_RUNNING:
+	case status_RUNNING, status_PREPARED:
 		return string(service.TaskStatusRunning)
 	case status_FAILED:
 		return string(service.TaskStatusFailed)
@@ -307,7 +330,7 @@ func NewTaskObj(taskType taskEnum, taskId, bucket, bucketUuid, remotePath string
 		taskMu:      &sync.RWMutex{},
 		taskType:    taskType,
 		taskId:      taskId,
-		taskStatus:  status_RUNNING,
+		taskStatus:  status_PREPARED,
 		bucket:      bucket,
 		bucketUuid:  bucketUuid,
 		dryRun:      dryRun,
@@ -355,18 +378,32 @@ func (m *PauseServiceManager) PreparePause(taskId, bucket, bucketUuid, remotePat
 	const _PreparePause = "PauseServiceManager::PreparePause:"
 
 	const args = "taskId: %v, bucket: %v, bucketUuid: %v, remotePath: %v"
-	logging.Infof("%v Called. "+args, _PreparePause, taskId, bucket, bucketUuid, remotePath)
-	defer logging.Infof("%v Returned %v. "+args, _PreparePause, err, taskId, bucket, bucketUuid,
+	logging.Infof("amd: %v Called. "+args, _PreparePause, taskId, bucket, bucketUuid, remotePath)
+	defer logging.Infof("amd: %v Returned %v. "+args, _PreparePause, err, taskId, bucket, bucketUuid,
 		remotePath)
 
-	// Set bst_PREPARE_PAUSE state
+	// Set bst_PREPARE_PAUSE state, only if there is no state for the bucket
 	err = m.bucketStateSet(_PreparePause, bucket, bst_NIL, bst_PREPARE_PAUSE)
 	if err != nil {
 		return err
 	}
 
-	// Record the task in progress
-	return m.taskAddPause(taskId, bucket, bucketUuid, remotePath)
+	// TODO: Check if pause can be initiated - PauseToken and PauseStateToken for this bucket
+
+	// TODO: Other Checks, DDL, Create, etc
+	time.Sleep(5 * time.Second)
+
+	// TODO: set a local metadata flag PauseRunning
+
+	// Add pause task with PREPARED state
+	if err = m.taskAddPause(taskId, bucket, bucketUuid, remotePath); err != nil {
+		// TODO: Cleanup state and anything from checks
+		return err
+	}
+
+	// TODO: goroutine to timeout if pause doesn't register soon via REST
+
+	return nil
 }
 
 // Pause is an external API called by ns_server (via cbauth) only on the GSI master node to initiate
@@ -379,28 +416,219 @@ func (m *PauseServiceManager) Pause(taskId, bucket, bucketUuid, remotePath strin
 	const _Pause = "PauseServiceManager::Pause:"
 
 	const args = "taskId: %v, bucket: %v, bucketUuid: %v, remotePath: %v"
-	logging.Infof("%v Called. "+args, _Pause, taskId, bucket, bucketUuid, remotePath)
-	defer logging.Infof("%v Returned %v. "+args, _Pause, err, taskId, bucket, bucketUuid,
+	logging.Infof("amd: %v Called. "+args, _Pause, taskId, bucket, bucketUuid, remotePath)
+	defer logging.Infof("amd: %v Returned %v. "+args, _Pause, err, taskId, bucket, bucketUuid,
 		remotePath)
 
-	// Update the task to set this node as master
+	// Find task created during prepare and update the task to set this node as master
 	task := m.taskSetMaster(taskId)
 	if task == nil {
 		err = service.ErrNotFound
-		logging.Errorf("%v taskId %v (from PreparePause) not found", _Pause, taskId)
-		return err
+		logging.Errorf("amd: %v taskId %v (from PreparePause) not found", _Pause, taskId)
+		return fmt.Errorf("Pause: taskSetMaster could not find task with taskId[%s] m.tasks[%v]", taskId, m.tasks)
 	}
 
-	// Set bst_PAUSING state
+	// Move the task from prepared to running
+	if !m.taskSetRunning(taskId) {
+		return fmt.Errorf("Pause: taskSetRunning failed as it could not find task with taskId[%s]", taskId)
+	}
+
+	// Move bucket to bst_PAUSING state
 	err = m.bucketStateSet(_Pause, bucket, bst_PREPARE_PAUSE, bst_PAUSING)
 	if err != nil {
 		return err
 	}
 
+	// TODO: check if there are any left over tokens from old pause
+
+	m.initStartPhase(bucketUuid, taskId)
+
+
+	// TODO: send done callback to pauser so that task list can be set to completed.
+	// TODO: same done callback to start the cleanup phase
+
 	// Create a Pauser object to run the master orchestration loop. It will be the only thread
 	// that changes or deletes *task after this point. It will save a pointer to itself into
 	// task.pauser and start its own goroutine, so we don't need to save a pointer to it here.
-	RunPauser(m, task, true)
+	NewPauser(m, task, true, m.pauseTokensByTaskId[taskId])
+	return nil
+}
+
+func (m *PauseServiceManager) initStartPhase(bucketUuid, taskId string) (err error) {
+	logging.Infof("amd: PauseServiceManager::initStartPhase b[%v] t[%v]", bucketUuid, taskId)
+
+	err = func() error {
+		m.genericMgr.cinfo.Lock()
+		defer m.genericMgr.cinfo.Unlock()
+		return m.genericMgr.cinfo.Fetch() // can be very slow; do here so multiple children don't need to
+	}()
+	if err != nil {
+		return err
+	}
+
+	var masterIP string // real IP address of this node (Rebal master), so other nodes can reach it
+	masterIP, err = func() (string, error) {
+		m.genericMgr.cinfo.RLock()
+		defer m.genericMgr.cinfo.RUnlock()
+		return m.genericMgr.cinfo.GetLocalHostname()
+	}()
+	if err != nil {
+		return err
+	}
+
+	pauseToken := m.genPauseToken(masterIP, bucketUuid, taskId)
+	logging.Infof("amd: PauseServiceManager::initStartPhase pt[%v]", pauseToken)
+
+	m.pauseTokensByTaskId[taskId] = pauseToken
+
+	if err = m.registerLocalPauseToken(pauseToken); err != nil {
+		return err
+	}
+
+	if err = m.registerPauseTokenInMetakv(pauseToken); err != nil {
+		return err
+	}
+
+	if err = m.registerGlobalPauseToken(pauseToken); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type PauseToken struct {
+	MasterId string
+	MasterIP string // real IP address of master node, not 127.0.0.1, so followers can reach it
+
+	BucketUuid string
+	TaskId     string
+
+	Error    string
+}
+
+func (m *PauseServiceManager) genPauseToken(masterIP, bucketUuid, taskId string) *PauseToken {
+	cfg := m.config.Load()
+	return &PauseToken{
+		MasterId: cfg["nodeuuid"].String(),
+		MasterIP: masterIP,
+		BucketUuid: bucketUuid,
+		TaskId: taskId,
+	}
+}
+
+const PauseTokenTag = "PauseToken"
+const PauseStateTokenTag = "PauseStateToken"
+
+const PauseMetakvDir = common.IndexingMetaDir + "pause/"
+const PauseTokenPathPrefix = PauseMetakvDir + PauseTokenTag
+const PauseStateTokenPathPrefix = PauseMetakvDir + PauseStateTokenTag
+
+func buildKeyForLocalPauseToken(pauseToken *PauseToken) string {
+	return fmt.Sprintf("%s_%s", PauseTokenTag, pauseToken.TaskId)
+}
+
+func buildMetakvPathForPauseToken(pauseToken *PauseToken) string {
+	return fmt.Sprintf("%s_%s", PauseTokenPathPrefix, pauseToken.TaskId)
+}
+
+func (m *PauseServiceManager) registerLocalPauseToken(pauseToken *PauseToken) error {
+	const method = "PauseServiceManager::registerLocalPauseToken:" // for logging
+
+	pToken, err := json.Marshal(pauseToken)
+	if err != nil {
+		return err
+	}
+
+	respch := make(MsgChannel)
+	m.supvMsgch <- &MsgClustMgrLocal{
+		mType:  CLUST_MGR_SET_LOCAL,
+		key:    buildKeyForLocalPauseToken(pauseToken),
+		value:  string(pToken),
+		respch: respch,
+	}
+
+	respMsg := <-respch
+	resp := respMsg.(*MsgClustMgrLocal)
+
+	errMsg := resp.GetError()
+	if errMsg != nil {
+		logging.Errorf("%v Unable to set PauseToken In Local Meta Storage. Err %v",
+			method, errMsg)
+		return err
+	}
+	logging.Infof("amd: %v Registered Pause Token In Local Meta %v jpt[%v]", method, pauseToken, pToken)
+
+	return nil
+}
+
+func (m *PauseServiceManager) registerPauseTokenInMetakv(pauseToken *PauseToken) error {
+	const method = "PauseServiceManager::registerPauseTokenInMetakv:" // for logging
+
+	err := common.MetakvSet(buildMetakvPathForPauseToken(pauseToken), pauseToken)
+	if err != nil {
+		logging.Errorf("amd: %v Unable to set PauseToken In Metakv Storage. Err %v", method, err)
+		return err
+	}
+	logging.Infof("amd: %v Registered Global PauseToken Token In Metakv %v at path[%v]", method, pauseToken, buildMetakvPathForPauseToken(pauseToken))
+
+	return nil
+}
+
+func (m *PauseServiceManager) registerGlobalPauseToken(pauseToken *PauseToken) (err error) {
+	const method = "PauseServiceManager::registerGlobalPauseToken" // for logging
+
+	m.genericMgr.cinfo.Lock()
+	defer m.genericMgr.cinfo.Unlock()
+
+	nids := m.genericMgr.cinfo.GetNodeIdsByServiceType(common.INDEX_HTTP_SERVICE)
+	if len(nids) < 1 {
+		return fmt.Errorf("amd: registerGlobalPauseToken: Got too few indexer nodes len(nids)=[%d]", len(nids))
+	}
+
+	url := "/pauseMgr/Pause"
+	for _, nid := range nids {
+
+		addr, err := m.genericMgr.cinfo.GetServiceAddress(nid, common.INDEX_HTTP_SERVICE, true)
+		if err == nil {
+
+			localaddr, err := m.genericMgr.cinfo.GetLocalServiceAddress(common.INDEX_HTTP_SERVICE, true)
+			if err != nil {
+				logging.Errorf("%v Error Fetching Local Service Address %v", method, err)
+				return fmt.Errorf("Fail to retrieve http endpoint for local node %v", err)
+			}
+
+			if addr == localaddr {
+				logging.Infof("amd: %v Skip local service %v", method, addr)
+				continue
+			}
+
+			body, err := json.Marshal(pauseToken)
+			if err != nil {
+				logging.Errorf("%v Error registering pause token on %v, err: %v",
+					method, addr+url, err)
+				return err
+			}
+
+			logging.Infof("amd: %v sending body [%v]", method, body)
+
+			bodybuf := bytes.NewBuffer(body)
+
+			resp, err := postWithAuth(addr+url, "application/json", bodybuf)
+			if err != nil {
+				logging.Errorf("%v Error registering pause token on %v, err: %v",
+					method, addr+url, err)
+				return err
+			}
+			ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+		} else {
+			logging.Errorf("%v Error Fetching Service Address %v", method, err)
+			return fmt.Errorf("Fail to retrieve http endpoint for index node %v", err)
+		}
+
+		logging.Infof("amd: %v Successfully registered pause token on %v", method, addr+url)
+	}
+
 	return nil
 }
 
@@ -518,7 +746,7 @@ func (m *PauseServiceManager) PauseGetTaskList() (tasks []service.Task) {
 	m.tasksMu.RLock()
 	defer m.tasksMu.RUnlock()
 	for _, taskObj := range m.tasks {
-		tasks = append(tasks, *taskObj.taskObjToServiceTask())
+		tasks = append(tasks, taskObj.taskObjToServiceTask()...)
 	}
 	return tasks
 }
@@ -670,33 +898,123 @@ func (m *PauseServiceManager) RestHandleFailedTask(w http.ResponseWriter, r *htt
 // RestHandlePause handles REST API /pauseMgr/Pause by initiating work on the specified taskId on
 // this follower node.
 func (m *PauseServiceManager) RestHandlePause(w http.ResponseWriter, r *http.Request) {
-	const _RestHandlePause = "PauseServiceManager::RestHandlePause:"
 
-	logging.Infof("%v called", _RestHandlePause)
-	defer logging.Infof("%v returned", _RestHandlePause)
+	const method = "PauseServiceManager::RestHandlePause:" // for logging
 
 	// Authenticate
-	_, ok := doAuth(r, w, _RestHandlePause)
+	_, ok := doAuth(r, w, method)
 	if !ok {
 		return
 	}
 
-	// Parameters
-	id := r.FormValue("id")
-
-	task := m.taskFind(id)
-	if task != nil {
-		// Do the work for this task
-		RunPauser(m, task, false)
-
-		return
+	writeError := func(w http.ResponseWriter, err error) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error() + "\n"))
 	}
 
-	// Task not found error reply
-	errMsg2 := fmt.Sprintf("%v taskId %v not found", _RestHandlePause, id)
-	logging.Errorf(errMsg2)
-	resp := &TaskResponse{Code: RESP_ERROR, Error: errMsg2}
-	rhSend(http.StatusInternalServerError, w, resp)
+	writeOk := func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK\n"))
+	}
+
+	var pauseToken PauseToken
+	if r.Method == "POST" {
+		bytes, _ := ioutil.ReadAll(r.Body)
+		if err := json.Unmarshal(bytes, &pauseToken); err != nil {
+			logging.Errorf("%v %v", method, err)
+			writeError(w, err)
+			return
+		}
+
+		logging.Infof("%v New Pause Token %v", method, pauseToken)
+
+		if m.observeGlobalPauseToken(pauseToken) {
+			// pause token from rest and metakv are the same.
+
+			//lockTime := common.TraceRWMutexLOCK(common.LOCK_WRITE, m.svcMgrMu, "svcMgrMu", method, "")
+			//defer c.TraceRWMutexUNLOCK(lockTime, c.LOCK_WRITE, m.svcMgrMu, "svcMgrMu", method, "")
+
+			var task *taskObj
+			if task = m.taskFind(pauseToken.TaskId); task == nil {
+				// prepare didn't happen
+
+				errStr := fmt.Sprintf("Node %v not in Prepared State for Pause", string(m.nodeInfo.NodeID))
+				logging.Errorf("%v %v", method, errStr)
+				writeError(w, fmt.Errorf(errStr))
+				return
+			}
+
+			m.pauseTokensByTaskId[pauseToken.TaskId] = &pauseToken
+
+			if err := m.registerLocalPauseToken(&pauseToken); err != nil {
+				logging.Errorf("%v %v", method, err)
+				writeError(w, err)
+				return
+			}
+
+			// Move the task from prepared to running
+			task.TaskObjSetRunning()
+
+			// Move bucket to bst_PAUSING state
+			if err := m.bucketStateSet(method, task.bucket, bst_PREPARE_PAUSE, bst_PAUSING); err != nil {
+				writeError(w, err)
+				return
+			}
+
+			NewPauser(m, task, false, &pauseToken)
+
+			writeOk(w)
+			return
+
+		} else {
+			err := fmt.Errorf("Pause Token Wait Timeout")
+			logging.Errorf("%v %v", method, err)
+			writeError(w, err)
+			return
+		}
+
+	} else {
+		writeError(w, fmt.Errorf("Unsupported method, use only POST"))
+		return
+	}
+}
+
+func (m *PauseServiceManager) observeGlobalPauseToken(pauseToken PauseToken) bool {
+
+	// TODO: make config?
+	//cfg := m.config.Load()
+	globalTokenWaitTimeout := 60// cfg["rebalance.globalTokenWaitTimeout"].Int()
+
+	elapsed := 1
+
+	for elapsed < globalTokenWaitTimeout {
+
+		var pToken PauseToken
+		found, err := common.MetakvGet(buildMetakvPathForPauseToken(&pauseToken), &pToken)
+		if err != nil {
+			logging.Errorf("PauseServiceManager::observeGlobalPauseToken Error Checking Pause Token In Metakv %v", err)
+			continue
+		}
+
+		if found {
+			if reflect.DeepEqual(pToken, pauseToken) {
+				logging.Infof("PauseServiceManager::observeGlobalPauseToken Global And Local Pause Tokens Match %v", pauseToken)
+				return true
+			} else {
+				logging.Errorf("PauseServiceManager::observeGlobalPauseToken Mismatch in Global and Local Pause Token. Global %v. Local %v.", pToken, pauseToken)
+				return false
+			}
+		}
+
+		logging.Infof("PauseServiceManager::observeGlobalPauseToken Waiting for Global Pause Token In Metakv")
+		time.Sleep(time.Second * time.Duration(1))
+		elapsed += 1
+	}
+
+	logging.Errorf("PauseServiceManager::observeGlobalPauseToken Timeout Waiting for Global Pause Token In Metakv")
+
+	return false
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -818,6 +1136,7 @@ func (m *PauseServiceManager) bucketStateCompareAndSwap(bucket string,
 	m.bucketStatesMu.Lock()
 	defer m.bucketStatesMu.Unlock()
 
+	// priorState will be bst_NIL if it doesn't have any state
 	priorState = m.bucketStates[bucket]
 	if priorState == oldState {
 		m.bucketStates[bucket] = newState
@@ -888,10 +1207,17 @@ func SetPauseMgr(pauseMgr *PauseServiceManager) {
 }
 
 // taskAdd adds a task to m.tasks.
-func (m *PauseServiceManager) taskAdd(task *taskObj) {
+func (m *PauseServiceManager) taskAdd(task *taskObj) error {
 	m.tasksMu.Lock()
+	defer m.tasksMu.Unlock()
+
+	if oldTask, ok := m.tasks[task.taskId]; ok {
+		// There is already a task with this taskId
+		return fmt.Errorf("PauseServiceManager::taskAdd: task with taskId[%s] already present oldTask[%v]", oldTask)
+	}
+
 	m.tasks[task.taskId] = task
-	m.tasksMu.Unlock()
+	return nil
 }
 
 // taskAddPause constructs and adds a Pause task to m.tasks.
@@ -900,7 +1226,11 @@ func (m *PauseServiceManager) taskAddPause(taskId, bucket, bucketUuid, remotePat
 	if err != nil {
 		return err
 	}
-	m.taskAdd(task)
+
+	if err = m.taskAdd(task); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -948,6 +1278,17 @@ func (m *PauseServiceManager) taskFind(taskId string) *taskObj {
 	return m.tasks[taskId]
 }
 
+// taskSetRunning looks up a task by taskId and if found marks it as running
+// returns true, else returns false (not found).
+func (m *PauseServiceManager) taskSetRunning(taskId string) bool {
+	task := m.taskFind(taskId)
+	if task != nil {
+		task.TaskObjSetRunning()
+		return true
+	}
+	return false
+}
+
 // taskSetFailed looks up a task by taskId and if found marks it as failed with the given errMsg and
 // returns true, else returns false (not found).
 func (m *PauseServiceManager) taskSetFailed(taskId, errMsg string) bool {
@@ -971,6 +1312,13 @@ func (m *PauseServiceManager) taskSetMaster(taskId string) *taskObj {
 	return task
 }
 
+func (task *taskObj) isMaster() bool {
+	task.taskMu.RLock()
+	defer task.taskMu.RUnlock()
+
+	return task.master
+}
+
 // hasBucketUuid returns whether this task has the bucketUuid parameter.
 func (this *taskObj) hasBucketUuid() bool {
 	this.taskMu.RLock()
@@ -989,6 +1337,13 @@ func (this *taskObj) hasDryRun() bool {
 		return true
 	}
 	return false
+}
+
+func (task *taskObj) SetProgress(newProgress float64) {
+	task.taskMu.Lock()
+	defer task.taskMu.Unlock()
+
+	task.progress = newProgress
 }
 
 // postWithAuthWrapper wraps postWithAuth so it can be called as a goroutine for parallel scatter.
@@ -1033,6 +1388,13 @@ func postWithAuthWrapper(logPrefix string, url string, bodyBuf *bytes.Buffer, ta
 	}
 }
 
+// TaskObjSetRunning sets task.status to status_RUNNING and task.errMessage to errMsg.
+func (this *taskObj) TaskObjSetRunning() {
+	this.taskMu.Lock()
+	this.taskStatus = status_RUNNING
+	this.taskMu.Unlock()
+}
+
 // TaskObjSetFailed sets task.status to status_FAILED and task.errMessage to errMsg.
 func (this *taskObj) TaskObjSetFailed(errMsg string) {
 	this.taskMu.Lock()
@@ -1043,32 +1405,47 @@ func (this *taskObj) TaskObjSetFailed(errMsg string) {
 
 // taskObjToServiceTask creates the ns_server service.Task (cbauth/service/interface.go)
 // representation of a taskObj.
-func (this *taskObj) taskObjToServiceTask() *service.Task {
+// If a task is in prepared state, add a service.Task with TaskTypePrepared and progress = 1.0
+// If a task is in running state, add a service.Task with TaskTypePrepared and progress = 1.0
+//    and service.Task with TaskTypeBucketPause
+func (this *taskObj) taskObjToServiceTask() (nsTasks []service.Task) {
 	this.taskMu.RLock()
 	defer this.taskMu.RUnlock()
 
-	nsTask := service.Task{
-		Rev:          EncodeRev(0),
-		ID:           this.taskId,
-		Type:         service.TaskType(this.taskType.StringNs()),
-		Status:       service.TaskStatus(this.taskStatus.StringNs()),
-		IsCancelable: true,
-		Progress:     this.progress,
-		ErrorMessage: this.errorMessage,
-		Extra:        make(map[string]interface{}),
+	buildNsTask := func(typ service.TaskType, status service.TaskStatus, progress float64) *service.Task {
+		nsTask := service.Task{
+			Rev:          EncodeRev(0),
+			ID:           this.taskId,
+			Type:         typ,
+			Status:       status,
+			IsCancelable: true,
+			Progress:     progress,
+			ErrorMessage: this.errorMessage,
+			Extra:        make(map[string]interface{}),
+		}
+
+		// Add task parameters to service.Extra map for supportability (ns_server will ignore these)
+		nsTask.Extra["bucket"] = this.bucket
+		if this.hasBucketUuid() {
+			nsTask.Extra["bucketUuid"] = this.bucketUuid
+		}
+		if this.hasDryRun() {
+			nsTask.Extra["dryRun"] = this.dryRun
+		}
+		nsTask.Extra["archivePath"] = this.archivePath
+		nsTask.Extra["archiveType"] = this.archiveType.String()
+		nsTask.Extra["master"] = this.master
+
+		return &nsTask
 	}
 
-	// Add task parameters to service.Extra map for supportability (ns_server will ignore these)
-	nsTask.Extra["bucket"] = this.bucket
-	if this.hasBucketUuid() {
-		nsTask.Extra["bucketUuid"] = this.bucketUuid
-	}
-	if this.hasDryRun() {
-		nsTask.Extra["dryRun"] = this.dryRun
-	}
-	nsTask.Extra["archivePath"] = this.archivePath
-	nsTask.Extra["archiveType"] = this.archiveType.String()
-	nsTask.Extra["master"] = this.master
+	// Add the completed prepared task
+	nsTasks = append(nsTasks, *buildNsTask(service.TaskTypePrepared, service.TaskStatusRunning, 1.0))
 
-	return &nsTask
+	// Add the current task
+	if this.taskStatus > status_PREPARED {
+		nsTasks = append(nsTasks, *buildNsTask(service.TaskType(this.taskType.StringNs()), service.TaskStatus(this.taskStatus.StringNs()), this.progress))
+	}
+
+	return nsTasks
 }

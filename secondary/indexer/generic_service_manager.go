@@ -60,7 +60,7 @@ type GenericServiceManager struct {
 // NewGenericServiceManager is the constructor for the GenericServiceManager class. It needs all the
 // args to be passed to NewPauseServiceManager and NewRebalanceServiceManager.
 func NewGenericServiceManager(mux *http.ServeMux, httpAddr string, rebalSupvCmdch MsgChannel,
-	rebalSupvMsgch MsgChannel, rebalSupvPrioMsgch MsgChannel, config common.Config, nodeInfo *service.NodeInfo, rebalanceRunning bool,
+	wrkrSupvMsgch MsgChannel, rebalSupvPrioMsgch MsgChannel, config common.Config, nodeInfo *service.NodeInfo, rebalanceRunning bool,
 	rebalanceToken *RebalanceToken, statsMgr *statsManager) (
 	*GenericServiceManager, *PauseServiceManager, *RebalanceServiceManager) {
 	const _class = "GenericServiceManager"
@@ -87,11 +87,11 @@ func NewGenericServiceManager(mux *http.ServeMux, httpAddr string, rebalSupvCmdc
 	m.cinfo.SetUserAgent(_class)
 
 	// Create PauseServiceManager singleton
-	pauseMgr := NewPauseServiceManager(m, mux, httpAddr)
+	pauseMgr := NewPauseServiceManager(m, mux, httpAddr, config, wrkrSupvMsgch, nodeInfo)
 	m.pauseMgr = pauseMgr
 
 	// Create RebalanceServiceManager singleton
-	rebalMgr := NewRebalanceServiceManager(m, httpAddr, rebalSupvCmdch, rebalSupvMsgch,
+	rebalMgr := NewRebalanceServiceManager(m, httpAddr, rebalSupvCmdch, wrkrSupvMsgch,
 		rebalSupvPrioMsgch, config, nodeInfo, rebalanceRunning, rebalanceToken)
 	m.rebalMgr = rebalMgr
 
