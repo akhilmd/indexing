@@ -170,7 +170,14 @@ func (p *Pauser) initPauseAsync() {
 
 	// TODO: init progress update
 
-	// TODO: Generate Tokens
+	// Generate PauseStateTokens
+	psts, err := p.generatePauseStateTokens()
+	if err != nil {
+		logging.Errorf("Pauser::initPauseAsync: Failed to generate PauseStateTokens: err[%v], psts[%v]",
+			err, psts)
+
+		// TODO: cleanup tokens
+	}
 
 	// TODO: Publish tokens to metaKV
 
@@ -178,6 +185,71 @@ func (p *Pauser) initPauseAsync() {
 	close(p.waitForTokenPublish)
 }
 
+func (p *Pauser) generatePauseStateTokens() (map[string]*PauseStateToken, error) {
+	indexerUuids, err := p.getIndexerUuids()
+	if err != nil || len(indexerUuids) < 1 {
+		logging.Errorf("Pauser::generatePauseStateTokens: Error getting indexer node UUIDs: err[%v]" +
+			" indexerUuids[%v]", err, indexerUuids)
+		return nil, err
+	}
+
+	psts := make(map[string]*PauseStateToken)
+	nodeUUID := string(p.pauseMgr.nodeInfo.NodeID)
+
+	for _, uuid := range indexerUuids {
+		pstId, pst, err := newPauseStateToken(nodeUUID, uuid, p.task.taskId, p.task.bucketUuid)
+		if err != nil {
+			logging.Errorf("Pauser::generatePauseStateTokens: Error making new PauseStateToken: err[%v]", err)
+			return nil, err
+		}
+
+		if oldPst, ok := psts[pstId]; ok {
+			err = fmt.Errorf("pst with pstId[%s] already exists, pst[%v]", pstId, oldPst)
+			logging.Errorf("Pauser::generatePauseStateTokens: PSTId Collision: err[%v]", err)
+			return nil, err
+		}
+
+		psts[pstId] = pst
+	}
+
+	return psts, nil
+}
+
+func (p *Pauser) getIndexerUuids() (indexerUuids []string, err error) {
+
+	p.pauseMgr.genericMgr.cinfo.Lock()
+	defer p.pauseMgr.genericMgr.cinfo.Unlock()
+
+	if err := p.pauseMgr.genericMgr.cinfo.FetchNodesAndSvsInfo(); err != nil {
+		logging.Errorf("Pauser::getIndexerUuids Error Fetching Cluster Information %v", err)
+		return nil, err
+	}
+
+	nids := p.pauseMgr.genericMgr.cinfo.GetNodeIdsByServiceType(common.INDEX_HTTP_SERVICE)
+	url := "/nodeuuid"
+
+	for _, nid := range nids {
+		haddr, err := p.pauseMgr.genericMgr.cinfo.GetServiceAddress(nid, common.INDEX_HTTP_SERVICE, true)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := getWithAuth(haddr + url)
+		if err != nil {
+			logging.Errorf("Pauser::getIndexerUuids Unable to Fetch Node UUID %v %v", haddr, err)
+			return nil, err
+
+		} else {
+			defer resp.Body.Close()
+
+			bytes, _ := ioutil.ReadAll(resp.Body)
+			uuid := string(bytes)
+			indexerUuids = append(indexerUuids, uuid)
+		}
+	}
+
+	return indexerUuids, nil
+}
 
 func (p *Pauser) observePause() {
 	<-p.waitForTokenPublish
