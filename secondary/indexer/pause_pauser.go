@@ -23,6 +23,88 @@ import (
 )
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// PauseStateToken and PauseState
+// Used to convey state change information between Pause master and follower nodes.
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type PauseState byte
+
+const (
+	PauseStateTokenPosted PauseState = iota
+	PauseStateTokenInProgess
+	PauseStateTokenProcessed
+	PauseStateTokenError
+)
+
+func (s PauseState) String() string {
+	switch s {
+	case PauseStateTokenPosted:
+		return "PauseStateTokenPosted"
+	case PauseStateTokenInProgess:
+		return "PauseStateTokenInProgess"
+	case PauseStateTokenProcessed:
+		return "PauseStateTokenProcessed"
+	case PauseStateTokenError:
+		return "PauseStateTokenError"
+	}
+
+	return fmt.Sprintf("PauseState-UNKNOWN-STATE-[%v]", s)
+}
+
+const PauseStateTokenTag = "PauseStateToken"
+
+type PauseStateToken struct {
+	MasterId     string
+	FollowerId   string
+	PauseId      string
+	State        PauseState
+	BucketUuid   string
+	Error        string
+}
+
+func newPauseStateToken(masterUuid, followerUuid, pauseId, bucketUuid string) (string, *PauseStateToken, error) {
+	pst := &PauseStateToken{
+		MasterId:   masterUuid,
+		FollowerId: followerUuid,
+		PauseId:    pauseId,
+		State:      PauseStateTokenPosted,
+		BucketUuid: bucketUuid,
+	}
+
+	ustr, err := common.NewUUID()
+	if err != nil {
+		logging.Errorf("newPauseStateToken: Failed to generate uuid: err[%v]", err)
+		return "", nil, err
+	}
+
+	pstId := fmt.Sprintf("%s%s", PauseStateTokenTag, ustr.Str())
+
+	return pstId, pst, nil
+}
+
+func decodePauseStateToken(path string, value []byte) (string, *PauseStateToken, error) {
+
+	pstIdPos := strings.Index(path, PauseStateTokenTag)
+	pstId := path[pstIdPos:]
+
+	pst := &PauseStateToken{}
+	err := json.Unmarshal(value, pst)
+	if err != nil {
+		logging.Errorf("decodePauseStateToken: Failed to unmarshal value[%s] path[%v]: err[%v]",
+			string(value), path, err)
+		return "", nil, err
+	}
+
+	return pstId, pst, nil
+}
+
+func (pst *PauseStateToken) Clone() *PauseStateToken {
+	pst1 := *pst
+	pst2 := pst1
+	return &pst2
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 // Pauser class - Perform the Pause of a given bucket (similar to Rebalancer's role).
 // This is used only on the master node of a task_PAUSE task to do the GSI orchestration.
 ////////////////////////////////////////////////////////////////////////////////////////////////////
