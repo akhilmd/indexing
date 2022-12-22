@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"strings"
+	"time"
 
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/indexing/secondary/logging"
@@ -104,6 +105,26 @@ func (pst *PauseStateToken) Clone() *PauseStateToken {
 	return &pst2
 }
 
+func setPauseStateTokenInMetakv(pstId string, pst *PauseStateToken) {
+
+	rhCb := func(r int, err error) error {
+		if r > 0 {
+			logging.Warnf("setPauseStateTokenInMetakv::rhCb: err[%v], Retrying[%d]", err, r)
+		}
+
+		return common.MetakvSet(PauseMetakvDir+pstId, pst)
+	}
+
+	rh := common.NewRetryHelper(10, time.Second, 1, rhCb)
+	err := rh.Run()
+
+	if err != nil {
+		logging.Fatalf("setPauseStateTokenInMetakv: Failed to set PauseStateToken In Meta Storage:" +
+			" pstId[%v] pst[%v] err[%v]", pstId, pst, err)
+		common.CrashOnError(err)
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Pauser class - Perform the Pause of a given bucket (similar to Rebalancer's role).
 // This is used only on the master node of a task_PAUSE task to do the GSI orchestration.
@@ -179,7 +200,9 @@ func (p *Pauser) initPauseAsync() {
 		// TODO: cleanup tokens
 	}
 
-	// TODO: Publish tokens to metaKV
+	// Publish tokens to metaKV
+	// will crash if cannot set in metaKV even after retries.
+	p.publishPauseStateTokens(psts)
 
 	// Ask observe to continue
 	close(p.waitForTokenPublish)
@@ -249,6 +272,13 @@ func (p *Pauser) getIndexerUuids() (indexerUuids []string, err error) {
 	}
 
 	return indexerUuids, nil
+}
+
+func (p *Pauser) publishPauseStateTokens(psts map[string]*PauseStateToken) {
+	for pstId, pst := range psts {
+		setPauseStateTokenInMetakv(pstId, pst)
+		logging.Infof("Pauser::publishPauseStateTokens Published pause state token: %v", pstId)
+	}
 }
 
 func (p *Pauser) observePause() {
