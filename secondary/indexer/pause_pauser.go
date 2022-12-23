@@ -557,6 +557,11 @@ func (p *Pauser) startPauseUpload(pstId string, pst *PauseStateToken) {
 	}
 	defer p.wg.Done()
 
+	if p.task.isMaster() {
+		// TODO: Replace sleep with actual master only work - version.json, etc
+		time.Sleep(3 * time.Second)
+	}
+
 	// TODO: Replace sleep with actual work
 	time.Sleep(5 * time.Second)
 
