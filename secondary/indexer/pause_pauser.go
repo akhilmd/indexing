@@ -390,7 +390,7 @@ func (p *Pauser) processPauseStateToken(pstId string, pst *PauseStateToken) {
 	}
 
 	if (pst.FollowerId == nodeUUID && !processed) {
-		// TODO: Implement follower handler
+		p.processPauseStateTokenAsFollower(pstId, pst)
 	}
 }
 
@@ -495,6 +495,74 @@ func (p *Pauser) doFinish() {
 	p.wg.Wait()
 
 	// TODO: call done callback to start the cleanup phase
+}
+
+func (p *Pauser) processPauseStateTokenAsFollower(pstId string, pst *PauseStateToken) bool {
+
+	logging.Infof("Pauser::processPauseStateTokenAsFollower: pstId[%v] pst[%v]", pstId, pst)
+
+	if pst.PauseId != p.task.taskId {
+		logging.Warnf("Pauser::processPauseStateTokenAsFollower: Found PauseStateToken[%v] with Unknown " +
+			"PauseId. Expected to match local taskId[%v]", pst, p.task.taskId)
+
+		return true
+	}
+
+	if !p.checkValidNotifyState(pstId, pst, "follower") {
+		return true
+	}
+
+	switch pst.State {
+
+	case PauseStateTokenPosted:
+		// Follower owns token, update in-memory and move to InProgress State
+
+		p.updateInMemToken(pstId, pst, "follower")
+
+		pst.State = PauseStateTokenInProgess
+		setPauseStateTokenInMetakv(pstId, pst)
+
+		return true
+
+	case PauseStateTokenInProgess:
+		// Follower owns token, update in-memory and start pause work
+
+		p.updateInMemToken(pstId, pst, "follower")
+
+		go p.startPauseUpload(pstId, pst)
+
+		return true
+
+	case PauseStateTokenProcessed:
+		// Master owns token, just mark in memory maps
+
+		p.updateInMemToken(pstId, pst, "follower")
+
+		return false
+
+	default:
+		return false
+	}
+}
+
+func (p *Pauser) startPauseUpload(pstId string, pst *PauseStateToken) {
+	start := time.Now()
+	logging.Infof("Pauser::startPauseUpload: Begin work: pstId[%v] pst[%v]", pstId, pst)
+	defer logging.Infof("Pauser::startPauseUpload: Done work: pstId[%v] pst[%v] took[%v]",
+		pstId, pst, time.Since(start))
+
+	if !p.addToWaitGroup() {
+		logging.Errorf("Pauser::startPauseUpload: Failed to add to pauser waitgroup.")
+		return
+	}
+	defer p.wg.Done()
+
+	// TODO: Replace sleep with actual work
+	time.Sleep(5 * time.Second)
+
+	// work done, change state, master handler will pick it up and do cleanup.
+	pst.State = PauseStateTokenProcessed
+	setPauseStateTokenInMetakv(pstId, pst)
 }
 
 // Often, metaKV can send multiple notifications for the same state change (probably
