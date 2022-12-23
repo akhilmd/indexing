@@ -159,6 +159,12 @@ type Pauser struct {
 
 	// Global token associated with this Pause task
 	pauseToken *PauseToken
+
+	// in-memory bookkeeping for observed tokens
+	masterTokens, followerTokens map[string]*PauseStateToken
+
+	// lock protecting access to maps like masterTokens and followerTokens
+	mu sync.RWMutex
 }
 
 // RunPauser creates a Pauser instance to execute the given task. It saves a pointer to itself in
@@ -176,6 +182,9 @@ func RunPauser(pauseMgr *PauseServiceManager, task *taskObj, master bool, pauseT
 		waitForTokenPublish: make(chan struct{}),
 		metakvCancel:        make(chan struct{}),
 		pauseToken:          pauseToken,
+
+		masterTokens:   make(map[string]*PauseStateToken),
+		followerTokens: make(map[string]*PauseStateToken),
 	}
 
 	task.taskMu.Lock()
@@ -390,6 +399,76 @@ func (p *Pauser) addToWaitGroup() bool {
 		return true
 	}
 	return false
+}
+
+// Often, metaKV can send multiple notifications for the same state change (probably
+// due to the eventual consistent nature of metaKV). Keep track of all state changes
+// in in-memory bookkeeping and ignore the duplicate notifications
+func (p *Pauser) checkValidNotifyState(pstId string, pst *PauseStateToken, caller string) bool {
+
+	// As the default state is "PauseStateTokenPosted"
+	// do not check for valid state changes for this state
+	if pst.State == PauseStateTokenPosted {
+		return true
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var inMemToken *PauseStateToken
+	var ok bool
+
+	if caller == "master" {
+		inMemToken, ok = p.masterTokens[pstId]
+	} else if caller == "follower" {
+		inMemToken, ok = p.followerTokens[pstId]
+	}
+
+	if ok {
+		// Token seen before, validate the state
+
+		// < for invalid state change
+		// == for duplicate notification
+		if pst.State <= inMemToken.State {
+			logging.Warnf("Pauser::checkValidNotifyState Detected Invalid State Change Notification" +
+				" for [%v]. pstId[%v] Local[%v] Metakv[%v]", caller, pstId, inMemToken.State, pst.State)
+
+			return false
+		}
+	}
+
+	return true
+}
+
+func (p *Pauser) updateInMemToken(pstId string, pst *PauseStateToken, caller string) {
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if caller == "master" {
+		p.masterTokens[pstId] = pst.Clone()
+	} else if caller == "follower" {
+		p.followerTokens[pstId] = pst.Clone()
+	}
+}
+
+func (p *Pauser) checkAllTokensDone() bool {
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for pstId, pst := range p.masterTokens {
+		if pst.State < PauseStateTokenProcessed {
+			// Either posted or processing
+
+			logging.Infof("Pauser::checkAllTokensDone PauseStateToken: pstId[%v] is in state[%v]",
+				pstId, pst.State)
+
+			return false
+		}
+	}
+
+	return true
 }
 
 // restGetLocalIndexMetadataBinary calls the /getLocalndexMetadata REST API (request_handler.go) via
