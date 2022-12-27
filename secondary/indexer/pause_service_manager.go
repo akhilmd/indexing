@@ -426,18 +426,18 @@ func (m *PauseServiceManager) Pause(params service.PauseParams) (err error) {
 		return err
 	}
 
-	if err := m.initStartPhase(bucketUuid, taskId); err != nil {
+	if err := m.initStartPhase(params.Bucket, params.ID); err != nil {
 		return  err
 	}
 
 	// Create a Pauser object to run the master orchestration loop. It will be the only thread
 	// that changes or deletes *task after this point. It will save a pointer to itself into
 	// task.pauser and start its own goroutine, so we don't need to save a pointer to it here.
-	RunPauser(m, task, true, m.pauseTokensById[taskId])
+	RunPauser(m, task, true, m.pauseTokensById[params.ID])
 	return nil
 }
 
-func (m *PauseServiceManager) initStartPhase(bucketUuid, pauseId string) (err error) {
+func (m *PauseServiceManager) initStartPhase(bucketName, pauseId string) (err error) {
 
 	err = func() error {
 		m.genericMgr.cinfo.Lock()
@@ -462,7 +462,7 @@ func (m *PauseServiceManager) initStartPhase(bucketUuid, pauseId string) (err er
 		return err
 	}
 
-	pauseToken := m.genPauseToken(masterIP, bucketUuid, pauseId)
+	pauseToken := m.genPauseToken(masterIP, bucketName, pauseId)
 	logging.Infof("PauseServiceManager::initStartPhase Generated PauseToken[%v]", pauseToken)
 
 	m.pauseTokenMapMu.Lock()
@@ -1155,18 +1155,18 @@ type PauseToken struct {
 	MasterId string
 	MasterIP string
 
-	BucketUuid string
+	BucketName string
 	PauseId    string
 
 	Error    string
 }
 
-func (m *PauseServiceManager) genPauseToken(masterIP, bucketUuid, pauseId string) *PauseToken {
+func (m *PauseServiceManager) genPauseToken(masterIP, bucketName, pauseId string) *PauseToken {
 	cfg := m.config.Load()
 	return &PauseToken{
 		MasterId:   cfg["nodeuuid"].String(),
 		MasterIP:   masterIP,
-		BucketUuid: bucketUuid,
+		BucketName: bucketName,
 		PauseId:    pauseId,
 	}
 }

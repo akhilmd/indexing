@@ -58,21 +58,21 @@ const PauseStateTokenTag = "PauseStateToken"
 const PauseStateTokenPathPrefix = PauseMetakvDir + PauseStateTokenTag
 
 type PauseStateToken struct {
-	MasterId     string
-	FollowerId   string
-	PauseId      string
-	State        PauseState
-	BucketUuid   string
-	Error        string
+	MasterId   string
+	FollowerId string
+	PauseId    string
+	State      PauseState
+	BucketName string
+	Error      string
 }
 
-func newPauseStateToken(masterUuid, followerUuid, pauseId, bucketUuid string) (string, *PauseStateToken, error) {
+func newPauseStateToken(masterUuid, followerUuid, pauseId, bucketName string) (string, *PauseStateToken, error) {
 	pst := &PauseStateToken{
 		MasterId:   masterUuid,
 		FollowerId: followerUuid,
 		PauseId:    pauseId,
 		State:      PauseStateTokenPosted,
-		BucketUuid: bucketUuid,
+		BucketName: bucketName,
 	}
 
 	ustr, err := common.NewUUID()
@@ -246,7 +246,7 @@ func (p *Pauser) generatePauseStateTokens() (map[string]*PauseStateToken, error)
 	nodeUUID := string(p.pauseMgr.nodeInfo.NodeID)
 
 	for _, uuid := range indexerUuids {
-		pstId, pst, err := newPauseStateToken(nodeUUID, uuid, p.task.taskId, p.task.bucketUuid)
+		pstId, pst, err := newPauseStateToken(nodeUUID, uuid, p.task.taskId, p.task.bucket)
 		if err != nil {
 			logging.Errorf("Pauser::generatePauseStateTokens: Error making new PauseStateToken: err[%v]", err)
 			return nil, err
