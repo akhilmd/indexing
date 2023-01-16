@@ -100,6 +100,11 @@ func newPauseUploadToken(masterUuid, followerUuid, pauseId, bucketName string) (
 func decodePauseUploadToken(path string, value []byte) (string, *PauseUploadToken, error) {
 
 	putIdPos := strings.Index(path, PauseUploadTokenTag)
+	if putIdPos < 0 {
+		return "", nil, fmt.Errorf("PauseUploadTokenTag[%v] not present in metakv path[%v]",
+			PauseUploadTokenTag, path)
+	}
+
 	putId := path[putIdPos:]
 
 	put := &PauseUploadToken{}
@@ -182,15 +187,19 @@ type Pauser struct {
 	// For cleanup
 	retErr      error
 	cleanupOnce sync.Once
+	doneCb      PauseDoneCallback
 }
 
-// RunPauser creates a Pauser instance to execute the given task. It saves a pointer to itself in
+type PauseDoneCallback func(string, error)
+
+// NewPauser creates a Pauser instance to execute the given task. It saves a pointer to itself in
 // task.pauser (visible to pauseMgr parent) and launches a goroutine for the work.
 //
 //	pauseMgr - parent object (singleton)
 //	task - the task_PAUSE task this object will execute
 //	master - true iff this node is the master
-func RunPauser(pauseMgr *PauseServiceManager, task *taskObj, master bool, pauseToken *PauseToken) {
+func NewPauser(pauseMgr *PauseServiceManager, task *taskObj, master bool, pauseToken *PauseToken,
+	doneCb PauseDoneCallback) *Pauser {
 	pauser := &Pauser{
 		pauseMgr: pauseMgr,
 		task:     task,
@@ -202,6 +211,8 @@ func RunPauser(pauseMgr *PauseServiceManager, task *taskObj, master bool, pauseT
 
 		masterTokens:   make(map[string]*PauseUploadToken),
 		followerTokens: make(map[string]*PauseUploadToken),
+
+		doneCb: doneCb,
 	}
 
 	task.taskMu.Lock()
@@ -218,7 +229,9 @@ func RunPauser(pauseMgr *PauseServiceManager, task *taskObj, master bool, pauseT
 	}
 
 	// TODO: Move logic from run to handlers for PauseUploadTokens
-	go pauser.run(master)
+	//go pauser.run(master)
+
+	return pauser
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -351,12 +364,15 @@ func (p *Pauser) observePause() {
 // processUploadTokens is metakv callback, not intended to be called otherwise
 func (p *Pauser) processUploadTokens(kve metakv.KVEntry) error {
 
-	if kve.Path == buildMetakvPathForPauseToken(p.pauseToken) {
+	if kve.Path == buildMetakvPathForPauseToken(p.pauseToken.PauseId) {
 		// Process PauseToken
 
 		logging.Infof("Pauser::processUploadTokens: PauseToken path[%v] value[%s]", kve.Path, kve.Value)
 
 		if kve.Value == nil {
+			// During cleanup, PauseToken is deleted by master and this serves as a signals for
+			// all observers on followers to stop.
+
 			logging.Infof("Pauser::processUploadTokens: PauseToken Deleted. Mark Done.")
 			p.cancelMetakv()
 			p.finishPause(nil)
@@ -395,7 +411,9 @@ func (p *Pauser) cancelMetakv() {
 }
 
 func (p *Pauser) processPauseUploadToken(putId string, put *PauseUploadToken) {
+
 	logging.Infof("Pauser::processPauseUploadToken putId[%v] put[%v]", putId, put)
+
 	if !p.addToWaitGroup() {
 		logging.Errorf("Pauser::processPauseUploadToken: Failed to add to pauser waitgroup.")
 		return
@@ -515,12 +533,13 @@ func (p *Pauser) finishPause(err error) {
 func (p *Pauser) doFinish() {
 	logging.Infof("Pauser::doFinish Cleanup: retErr[%v]", p.retErr)
 
-	// TODO: signal others that we are cleaning up using done channel
+	// TODO: signal others that we are cleaning up using done channel?
 
 	p.cancelMetakv()
 	p.wg.Wait()
 
-	// TODO: call done callback to start the cleanup phase
+	// Done callback starts the cleanup phase
+	p.doneCb(p.pauseToken.PauseId, p.retErr)
 }
 
 func (p *Pauser) processPauseUploadTokenAsFollower(putId string, put *PauseUploadToken) bool {
