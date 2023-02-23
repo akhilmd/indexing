@@ -28,6 +28,7 @@ import (
 	"github.com/couchbase/cbauth/service"
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/indexing/secondary/logging"
+	mc "github.com/couchbase/indexing/secondary/manager/common"
 )
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -749,6 +750,43 @@ func (m *PauseServiceManager) PreparePause(params service.PauseParams) (err erro
 	logging.Infof("%v Called. "+args, _PreparePause, params.ID, params.Bucket, params.RemotePath)
 	defer logging.Infof("%v Returned %v. "+args, _PreparePause, err, params.ID, params.Bucket, params.RemotePath)
 
+	// TODO: recover pause state during bootstrap
+	if opt, exists := m.getPauseToken(params.ID); exists {
+		err = fmt.Errorf("master pause token already present with manager! pause in progress. opt[%v]", opt)
+		return err
+	}
+
+	// TODO: cleanup instead of returning error?
+	if opt, opts, err := m.getCurrPauseTokens(params.ID); err != nil {
+		return err
+	} else if opt != nil {
+		// found pauseToken in metaKv
+		err = fmt.Errorf("master pause token already present with metakv! pause in progress. opt[%v]", opt)
+		return err
+	} else if len(opts) > 0 {
+		// found PST in metaKv
+		err = fmt.Errorf("PSTs present in metaKv! pause in progress. opt[%v]", opt)
+		return err
+	}
+
+	// TODO: check for initial or catchup state
+	if ddlRunning, inProgressIndexName := m.checkDDLRunningForBucket(params.Bucket); ddlRunning {
+		err = fmt.Errorf("DDL is running for indexes [%v]", inProgressIndexName)
+		return err
+	}
+
+	// TODO: check for CREATE/BUILD/DELETE/DROP and sch tokens
+	m.genericMgr.cinfo.RLock()
+	bucketUUID := m.genericMgr.cinfo.GetBucketUUID(params.Bucket)
+	m.genericMgr.cinfo.RUnlock()
+
+	if inProg, inProgDefns, err := mc.CheckInProgressCommandTokensForBucket(bucketUUID, m.getIndexDefnById); err != nil {
+		return err
+	} else if inProg {
+		err = fmt.Errorf("Some DDL tokens are in progress for defns[%v]", inProgDefns)
+		return err
+	}
+
 	// TODO: Check remotePath access?
 
 	// Set bst_PREPARE_PAUSE state
@@ -759,6 +797,32 @@ func (m *PauseServiceManager) PreparePause(params service.PauseParams) (err erro
 
 	// Record the task in progress
 	return m.taskAddPrepare(params.ID, params.Bucket, params.RemotePath, true, false)
+}
+
+
+func (m *PauseServiceManager) checkDDLRunningForBucket(bucketName string) (bool, []string) {
+
+	respCh := make(MsgChannel)
+	m.supvMsgch <- &MsgCheckDDLInProgress{respCh: respCh, bucketName: bucketName}
+	msg := <-respCh
+
+	ddlInProgress := msg.(*MsgDDLInProgressResponse).GetDDLInProgress()
+	inProgressIndexNames := msg.(*MsgDDLInProgressResponse).GetInProgressIndexNames()
+	return ddlInProgress, inProgressIndexNames
+}
+
+
+func (m *PauseServiceManager) getIndexDefnById(indexDefnId common.IndexDefnId) *common.IndexDefn {
+	respch := make(MsgChannel)
+	m.supvMsgch <- &MsgClustMgrDefn{
+		indexDefnId: indexDefnId,
+		respch: respch,
+	}
+
+	respMsg := <-respch
+	resp := respMsg.(*MsgClustMgrDefn)
+
+	return resp.indexDefn
 }
 
 // Pause is an external API called by ns_server (via cbauth) only on the GSI master node to initiate
@@ -831,9 +895,9 @@ func (m *PauseServiceManager) initStartPhase(bucketName, pauseId string, typ Pau
 	pauseToken := m.genPauseToken(masterIP, bucketName, pauseId, typ)
 	logging.Infof("PauseServiceManager::initStartPhase Generated PauseToken[%v]", pauseToken)
 
-	m.pauseTokenMapMu.Lock()
-	m.pauseTokensById[pauseId] = pauseToken
-	m.pauseTokenMapMu.Unlock()
+	if err = m.setPauseToken(pauseId, pauseToken); err != nil {
+		return err
+	}
 
 	// Add to local metadata
 	if err = m.registerLocalPauseToken(pauseToken); err != nil {
@@ -1581,9 +1645,13 @@ func (m *PauseServiceManager) RestHandlePause(w http.ResponseWriter, r *http.Req
 				return
 			}
 
-			m.pauseTokenMapMu.Lock()
-			m.pauseTokensById[pauseToken.PauseId] = &pauseToken
-			m.pauseTokenMapMu.Unlock()
+			if err := m.setPauseToken(pauseToken.PauseId, &pauseToken); err != nil {
+				logging.Errorf("PauseServiceManager::RestHandlePause: Failed to store pause token in mgr"+
+					": err[%v]", err)
+				writeError(w, err)
+
+				return
+			}
 
 			if err := m.registerLocalPauseToken(&pauseToken); err != nil {
 				logging.Errorf("PauseServiceManager::RestHandlePause: Failed to store pause token in local"+
@@ -2052,6 +2120,34 @@ func (m *PauseServiceManager) genPauseToken(masterIP, bucketName, pauseId string
 	}
 }
 
+func (m *PauseServiceManager) getPauseToken(id string) (*PauseToken, bool) {
+	m.pauseTokenMapMu.RLock()
+	defer m.pauseTokenMapMu.RUnlock()
+
+	pt, exists := m.pauseTokensById[id]
+
+	return pt, exists
+}
+
+func (m *PauseServiceManager) setPauseToken(id string, pt *PauseToken) error {
+	m.pauseTokenMapMu.Lock()
+	defer m.pauseTokenMapMu.Unlock()
+
+	if oldPT, ok := m.pauseTokensById[id]; ok {
+
+		if pt == nil {
+			delete(m.pauseTokensById, id)
+		} else {
+			return fmt.Errorf("conflict: PauseToken[%v] with id[%v] already present!", oldPT, id)
+		}
+
+	} else {
+		m.pauseTokensById[id] = pt
+	}
+
+	return nil
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // PauseToken - Lifecycle
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2118,9 +2214,9 @@ func (m *PauseServiceManager) cleanupLocalPauseToken(pauseId string) error {
 		common.CrashOnError(err)
 	}
 
-	m.pauseTokenMapMu.Lock()
-	delete(m.pauseTokensById, pauseId)
-	m.pauseTokenMapMu.Unlock()
+	if err := m.setPauseToken(pauseId, nil); err != nil {
+		return err
+	}
 
 	return nil
 }

@@ -704,6 +704,7 @@ func (gsi *gsiKeyspace) BuildIndexes(requestId string, names ...string) (retErr 
 	}()
 
 	defnIDs := make([]uint64, len(names))
+	bucketIDs := make([]string, len(names))
 	for i, name := range names {
 		index, err := gsi.IndexByName(name)
 		if err != nil {
@@ -720,11 +721,14 @@ func (gsi *gsiKeyspace) BuildIndexes(requestId string, names ...string) (retErr 
 			if err := idx.CheckScheduled(); err != nil {
 				return errors.NewError(fmt.Errorf("%v: %v", err.Error(), name), "BuildIndexes")
 			}
+
+			bucketId := idx.BucketId()
+			bucketIDs[i] = bucketId
 		}
 
 		defnIDs[i] = string2defnID(index.Id())
 	}
-	err := gsi.gsiClient.BuildIndexes(defnIDs)
+	err := gsi.gsiClient.BuildIndexes2(defnIDs, bucketIDs)
 	if err != nil {
 		return errors.NewError(err, "BuildIndexes")
 	}
@@ -1180,7 +1184,7 @@ func (si *secondaryIndex) Drop(requestId string) errors.Error {
 		return ErrorIndexEmpty
 	}
 
-	if err := si.gsi.gsiClient.DropIndex(si.defnID); err != nil {
+	if err := si.gsi.gsiClient.DropIndex(si.defnID, si.BucketId()); err != nil {
 		return errors.NewError(err, "GSI Drop()")
 	}
 	si.gsi.delIndex(si.Id())

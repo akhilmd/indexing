@@ -186,6 +186,9 @@ func (c *clustMgrAgent) handleSupvervisorCommands(cmd Message) {
 	case CLUST_MGR_INST_ASYNC_RECOVERY_DONE:
 		c.handleInstAsyncRecoveryDone(cmd)
 
+	case CLUST_MGR_GET_DEFN:
+		c.handleGetDefn(cmd)
+
 	default:
 		logging.Errorf("ClusterMgrAgent::handleSupvervisorCommands Unknown Message %v", cmd)
 	}
@@ -677,6 +680,19 @@ func (c *clustMgrAgent) handleInstAsyncRecoveryDone(cmd Message) {
 	common.CrashOnError(err)
 
 	c.supvCmdch <- &MsgSuccess{}
+}
+
+func (c *clustMgrAgent) handleGetDefn(cmd Message) {
+	logging.Infof("ClustMgr:handleGetDefn %v", cmd)
+
+	msg := cmd.(*MsgClustMgrDefn)
+
+	indexDefnId := msg.GetIndexDefnId()
+
+	indexDefn, err := c.mgr.GetIndexDefnById(indexDefnId)
+	common.CrashOnError(err)
+
+	c.supvCmdch <- &MsgClustMgrDefn{indexDefn: indexDefn}
 }
 
 // panicHandler handles the panic from index manager

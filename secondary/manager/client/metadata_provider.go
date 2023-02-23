@@ -1903,7 +1903,7 @@ func (o *MetadataProvider) makeCreateIndexRequest(idxDefn *c.IndexDefn, layout m
 	if c.IsPartitioned(idxDefn.PartitionScheme) && idxDefn.NumReplica > 0 && wait {
 
 		// place token for index build
-		if err := mc.PostBuildCommandToken(defnID); err != nil {
+		if err := mc.PostBuildCommandToken(defnID, idxDefn.BucketUUID); err != nil {
 			logging.Errorf("Index is created, but fail to Build Index due to internal errors.  Error=%v", err)
 			return errors.New("Index is created, bu fail to Build Index due to internal errors.  Please use build index statement.")
 		}
@@ -3255,7 +3255,7 @@ func (o *MetadataProvider) deleteScheduleTokens(defnID c.IndexDefnId) (bool, boo
 	return schedToken, stopToken, nil
 }
 
-func (o *MetadataProvider) DropIndex(defnID c.IndexDefnId) error {
+func (o *MetadataProvider) DropIndex(defnID c.IndexDefnId, bucketId string) error {
 
 	var schedToken, stopToken bool
 	var tokenErr error
@@ -3263,7 +3263,7 @@ func (o *MetadataProvider) DropIndex(defnID c.IndexDefnId) error {
 		// place token for recovery.  Even if the index does not exist, the delete token will
 		// be cleaned up during rebalance.  By placing the delete token, it will make sure that the
 		// outstanding create token will be deleted.
-		if err := mc.PostDeleteCommandToken(defnID, false); err != nil {
+		if err := mc.PostDeleteCommandToken(defnID, false, bucketId); err != nil {
 			return errors.New(fmt.Sprintf("Fail to Drop Index due to internal errors.  Error=%v.", err))
 		}
 
@@ -3334,14 +3334,15 @@ func (o *MetadataProvider) DropIndex(defnID c.IndexDefnId) error {
 	return nil
 }
 
-func (o *MetadataProvider) BuildIndexes(defnIDs []c.IndexDefnId) error {
+func (o *MetadataProvider) BuildIndexes(defnIDs []c.IndexDefnId, bucketIds []string) error {
 
 	watcherIndexMap := make(map[c.IndexerId][]c.IndexDefnId)
 	watcherNodeMap := make(map[c.IndexerId]string)
 	defnList := ([]c.IndexDefnId)(nil)
+	var bucketIdList []string
 	buckets := make(map[string]bool)
 
-	for _, id := range defnIDs {
+	for ind, id := range defnIDs {
 
 		if !security.IsToolsConfigUsed() {
 			// Has the index been deleted?
@@ -3405,6 +3406,7 @@ func (o *MetadataProvider) BuildIndexes(defnIDs []c.IndexDefnId) error {
 
 		// There is at least one watcher (one indexer node)
 		defnList = append(defnList, id)
+		bucketIdList = append(bucketIdList, bucketIds[ind])
 
 		for _, watcher := range watchers {
 			indexerId := watcher.getIndexerId()
@@ -3439,8 +3441,8 @@ func (o *MetadataProvider) BuildIndexes(defnIDs []c.IndexDefnId) error {
 
 	if !security.IsToolsConfigUsed() {
 		// place token for recovery.
-		for _, id := range defnList {
-			if err := mc.PostBuildCommandToken(id); err != nil {
+		for ind, id := range defnList {
+			if err := mc.PostBuildCommandToken(id, bucketIdList[ind]); err != nil {
 				return errors.New(fmt.Sprintf("Fail to Build Index due to internal errors.  Error=%v.", err))
 			}
 		}

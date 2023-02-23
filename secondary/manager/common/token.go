@@ -92,12 +92,16 @@ type DeleteCommandToken struct {
 	Bucket   string
 	DefnId   c.IndexDefnId
 	Internal bool
+
+	BucketUUID string
 }
 
 type BuildCommandToken struct {
 	Name   string
 	Bucket string
 	DefnId c.IndexDefnId
+
+	BucketUUID string
 }
 
 type DropInstanceCommandTokenList struct {
@@ -113,6 +117,107 @@ type DropInstanceCommandToken struct {
 
 func (tok *DropInstanceCommandToken) String() string {
 	return fmt.Sprintf("DefnID:%v InstID:%v Replica:%v", tok.DefnId, tok.InstId, tok.ReplicaId)
+}
+
+func CheckInProgressCommandTokensForBucket(bucketUUID string, getIndexDefnById func(common.IndexDefnId) *common.IndexDefn) (_ bool, inProgressIndexes []string, err error) {
+
+	// Check for presence of create/build/delete tokens
+
+	// List create tokens
+	createCmdTokens, err := ListAndFetchAllCreateCommandTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter creates for bucket
+	for _, createCmdToken := range createCmdTokens {
+		if bucketUUID == createCmdToken.BucketUUID {
+			inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", createCmdToken.DefnId))
+		}
+	}
+
+	// List delete tokens
+	deleteCmdTokens, err := ListDeleteCommandToken()
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter deletes for bucket
+	for _, deleteCmdToken := range deleteCmdTokens {
+		//if indexDefn := getIndexDefnById(deleteCmdToken.DefnId); indexDefn != nil && bucketUUID == indexDefn.BucketUUID {
+		//	inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", deleteCmdToken.DefnId))
+		//}
+
+		if bucketUUID == deleteCmdToken.BucketUUID {
+			inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", deleteCmdToken.DefnId))
+		}
+	}
+
+	// List drop tokens
+	// Note that for elixir, drop tokens should never be seen in metakv as alter index is not supported and
+	// the replica count is fixed. Add check anyway for safety.
+	dropCmdTokens, err := ListAndFetchAllDropInstanceCommandToken(1)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter drops for bucket
+	for _, dropCmdToken := range dropCmdTokens {
+		if bucketUUID == dropCmdToken.Defn.BucketUUID {
+			inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", dropCmdToken.DefnId))
+		}
+	}
+
+	// List build tokens
+	buildCmdTokens, err := ListBuildCommandTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter builds for bucket
+	for _, buildCmdToken := range buildCmdTokens {
+		//if indexDefn := getIndexDefnById(buildCmdToken.DefnId); indexDefn != nil && bucketUUID == indexDefn.BucketUUID {
+		//	inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", buildCmdToken.DefnId))
+		//}
+
+		if bucketUUID == buildCmdToken.BucketUUID {
+			inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", buildCmdToken.DefnId))
+		}
+	}
+
+	// Check schedule tokens.
+
+	schCreateTokens, err := ListAllScheduleCreateTokens()
+	if err != nil {
+		return false,  nil, err
+	}
+
+	stopSchCreateTokens, err := ListAllStopScheduleCreateTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	for _, schCreateToken := range schCreateTokens {
+		// Filter schedule create tokens for bucket
+		if bucketUUID != schCreateToken.BucketUUID {
+			continue
+		}
+
+		// Match with stop schedule create token
+		hasStop := false
+		for _, stopSchCreateToken := range stopSchCreateTokens {
+			if stopSchCreateToken.DefnId == schCreateToken.Definition.DefnId {
+				hasStop = true
+				break
+			}
+		}
+
+		if !hasStop {
+			inProgressIndexes = append(inProgressIndexes, fmt.Sprintf("DefnId[%v]", schCreateToken.Definition.DefnId))
+		}
+	}
+
+	return len(inProgressIndexes) > 0, inProgressIndexes, nil
 }
 
 type IndexerVersionToken struct {
@@ -355,6 +460,32 @@ func ListAndFetchCreateCommandToken(defnId c.IndexDefnId) ([]*CreateCommandToken
 	return result, nil
 }
 
+func ListAndFetchAllCreateCommandTokens() (result []*CreateCommandToken, err error) {
+
+	paths, err := c.MetakvBigValueList(CreateDDLCommandTokenPath)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, path := range paths {
+
+		token := &CreateCommandToken{}
+		exists, err := c.MetakvBigValueGet(path, token)
+
+		if err != nil {
+			logging.Errorf("ListAndFetchAllCreateCommandTokens: path %v err %v", path, err)
+			return nil, err
+		}
+
+		if exists {
+			result = append(result, token)
+		}
+
+	}
+
+	return result, nil
+}
+
 func GetDefnIdFromCreateCommandTokenPath(path string) (c.IndexDefnId, uint64, error) {
 
 	if len(path) <= len(CreateDDLCommandTokenPath) {
@@ -440,11 +571,12 @@ func MarshallCreateCommandTokenList(r *CreateCommandTokenList) ([]byte, error) {
 //
 // Generate a token to metakv for recovery purpose
 //
-func PostDeleteCommandToken(defnId c.IndexDefnId, internal bool) error {
+func PostDeleteCommandToken(defnId c.IndexDefnId, internal bool, bucketId string) error {
 
 	commandToken := &DeleteCommandToken{
 		DefnId:   defnId,
 		Internal: internal,
+		BucketUUID: bucketId,
 	}
 
 	id := fmt.Sprintf("%v", defnId)
@@ -628,10 +760,11 @@ func FetchIndexDefnToDeleteCommandTokensMap() (map[c.IndexDefnId]*DeleteCommandT
 //
 // Generate a token to metakv for recovery purpose
 //
-func PostBuildCommandToken(defnId c.IndexDefnId) error {
+func PostBuildCommandToken(defnId c.IndexDefnId, bucketId string) error {
 
 	commandToken := &BuildCommandToken{
 		DefnId: defnId,
+		BucketUUID: bucketId,
 	}
 
 	id := fmt.Sprintf("%v", defnId)
@@ -640,6 +773,23 @@ func PostBuildCommandToken(defnId c.IndexDefnId) error {
 	}
 
 	return nil
+}
+
+func ListBuildCommandTokens() (result []*BuildCommandToken, err error) {
+	entries, err := c.MetakvList(BuildDDLCommandTokenPath)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		token := &BuildCommandToken{}
+		if err = json.Unmarshal(entry.Value, token); err != nil {
+			return nil, err
+		}
+		result = append(result, token)
+	}
+
+	return result, nil
 }
 
 //

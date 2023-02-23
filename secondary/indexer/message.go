@@ -111,6 +111,7 @@ const (
 	CLUST_MGR_RECOVER_INDEX
 	CLUST_MGR_BUILD_RECOVERED_INDEXES
 	CLUST_MGR_INST_ASYNC_RECOVERY_DONE
+	CLUST_MGR_GET_DEFN
 
 	//CBQ_BRIDGE_SHUTDOWN
 	CBQ_BRIDGE_SHUTDOWN
@@ -2225,6 +2226,33 @@ func (m *MsgClustMgrTopology) String() string {
 	return b.String()
 }
 
+// CLUST_MGR_GET_DEFN
+type MsgClustMgrDefn struct {
+	indexDefn   *common.IndexDefn
+	indexDefnId common.IndexDefnId
+	respch      MsgChannel
+}
+
+func (m *MsgClustMgrDefn) GetMsgType() MsgType {
+	return CLUST_MGR_GET_DEFN
+}
+
+func (m *MsgClustMgrDefn) GetIndexDefn() *common.IndexDefn {
+	return m.indexDefn
+}
+
+func (m *MsgClustMgrDefn) GetIndexDefnId() common.IndexDefnId {
+	return m.indexDefnId
+}
+
+func (m *MsgClustMgrDefn) GetRespCh() MsgChannel {
+	return m.respch
+}
+
+func (m *MsgClustMgrDefn) String() string {
+	return fmt.Sprintf("DefnId[%v] Defn[%v]", m.indexDefnId, m.indexDefn)
+}
+
 // CLUST_MGR_GET_LOCAL
 // CLUST_MGR_SET_LOCAL
 // CLUST_MGR_DEL_LOCAL
@@ -2346,6 +2374,8 @@ func (m *MsgIndexerState) GetRollbackTimes() map[string]int64 {
 
 type MsgCheckDDLInProgress struct {
 	respCh MsgChannel
+
+	bucketName string
 }
 
 func (m *MsgCheckDDLInProgress) GetMsgType() MsgType {
@@ -2354,6 +2384,10 @@ func (m *MsgCheckDDLInProgress) GetMsgType() MsgType {
 
 func (m *MsgCheckDDLInProgress) GetRespCh() MsgChannel {
 	return m.respCh
+}
+
+func (m *MsgCheckDDLInProgress) GetBucketName() string {
+	return m.bucketName
 }
 
 type MsgDDLInProgressResponse struct {

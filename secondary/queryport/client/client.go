@@ -193,7 +193,7 @@ type BridgeAccessor interface {
 
 	// BuildIndexes to build a deferred set of indexes. This call implies
 	// that indexes specified are already created.
-	BuildIndexes(defnIDs []uint64) error
+	BuildIndexes(defnIDs []uint64, bucketIds []string) error
 
 	// MoveIndex to move a set of indexes to different node.
 	MoveIndex(defnID uint64, with map[string]interface{}) error
@@ -204,7 +204,7 @@ type BridgeAccessor interface {
 	// DropIndex to drop index specified by `defnID`.
 	// - if index is in deferred build state, it shall be removed
 	//   from deferred list.
-	DropIndex(defnID uint64) error
+	DropIndex(defnID uint64, bucketId string) error
 
 	// GetScanports shall return list of queryports for all indexer in
 	// the cluster.
@@ -587,13 +587,17 @@ func (c *GsiClient) CreateIndex4(
 
 // BuildIndexes implements BridgeAccessor{} interface.
 func (c *GsiClient) BuildIndexes(defnIDs []uint64) error {
+	return c.BuildIndexes2(defnIDs, nil)
+}
+
+func (c *GsiClient) BuildIndexes2(defnIDs []uint64, bucketIds []string) error {
 	if c.bridge == nil {
 		return ErrorClientUninitialized
 	}
 
 	logging.Infof("BuildIndexes %v ...", defnIDs)
 	begin := time.Now()
-	err := c.bridge.BuildIndexes(defnIDs)
+	err := c.bridge.BuildIndexes(defnIDs, bucketIds)
 	fmsg := "BuildIndexes %v - elapsed(%v), err(%v)"
 	logging.Infof(fmsg, defnIDs, time.Since(begin), err)
 	return err
@@ -628,14 +632,14 @@ func (c *GsiClient) AlterReplicaCount(action string, defnID uint64, with map[str
 }
 
 // DropIndex implements BridgeAccessor{} interface.
-func (c *GsiClient) DropIndex(defnID uint64) error {
+func (c *GsiClient) DropIndex(defnID uint64, bucketId string) error {
 	if c.bridge == nil {
 		return ErrorClientUninitialized
 	}
 
 	logging.Infof("DropIndex %v ...", defnID)
 	begin := time.Now()
-	err := c.bridge.DropIndex(defnID)
+	err := c.bridge.DropIndex(defnID, bucketId)
 	fmsg := "DropIndex %v - elapsed(%v), err(%v)"
 	logging.Infof(fmsg, defnID, time.Since(begin), err)
 	return err

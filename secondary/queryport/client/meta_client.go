@@ -347,7 +347,7 @@ RETRY:
 }
 
 // BuildIndexes implements BridgeAccessor{} interface.
-func (b *metadataClient) BuildIndexes(defnIDs []uint64) error {
+func (b *metadataClient) BuildIndexes(defnIDs []uint64, bucketIds []string) error {
 	currmeta := (*indexTopology)(atomic.LoadPointer(&b.indexers))
 
 	for _, defnId := range defnIDs {
@@ -360,7 +360,7 @@ func (b *metadataClient) BuildIndexes(defnIDs []uint64) error {
 	for i, id := range defnIDs {
 		ids[i] = common.IndexDefnId(id)
 	}
-	return b.mdClient.BuildIndexes(ids)
+	return b.mdClient.BuildIndexes(ids, bucketIds)
 }
 
 // MoveIndex implements BridgeAccessor{} interface.
@@ -421,8 +421,8 @@ func (b *metadataClient) AlterReplicaCount(action string, defnID uint64, planJSO
 }
 
 // DropIndex implements BridgeAccessor{} interface.
-func (b *metadataClient) DropIndex(defnID uint64) error {
-	err := b.mdClient.DropIndex(common.IndexDefnId(defnID))
+func (b *metadataClient) DropIndex(defnID uint64, bucketId string) error {
+	err := b.mdClient.DropIndex(common.IndexDefnId(defnID), bucketId)
 	if err == nil { // cleanup index local cache.
 		b.safeupdate(nil, false /*force*/)
 	}

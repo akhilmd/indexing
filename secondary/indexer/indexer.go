@@ -1517,6 +1517,9 @@ func (idx *indexer) handleWorkerMsgs(msg Message) {
 	case CLUST_MGR_DEL_LOCAL:
 		idx.handleDelLocalMeta(msg)
 
+	case CLUST_MGR_GET_DEFN:
+		idx.handleGetDefn(msg)
+
 	case INDEXER_CHECK_DDL_IN_PROGRESS:
 		idx.handleCheckDDLInProgress(msg)
 
@@ -6177,6 +6180,11 @@ func (idx *indexer) handleCheckDDLInProgress(msg Message) {
 	} else {
 		ddlInProgress, inProgressIndexNames = idx.checkDDLInProgress()
 	}
+
+	if bucketName := ddlMsg.GetBucketName(); bucketName != "" {
+		ddlInProgress, inProgressIndexNames = filterRunParamsByBucket(ddlInProgress, inProgressIndexNames, bucketName)
+	}
+
 	respCh <- &MsgDDLInProgressResponse{
 		ddlInProgress:        ddlInProgress,
 		inProgressIndexNames: inProgressIndexNames}
@@ -9494,6 +9502,14 @@ func (idx *indexer) handleDelLocalMeta(msg Message) {
 	}
 
 	respch <- respMsg
+}
+
+func (idx *indexer) handleGetDefn(msg Message) {
+
+	respMsg, _ := idx.sendMsgToClustMgr(msg)
+	respch := msg.(*MsgClustMgrDefn).GetRespCh()
+	respch <- respMsg
+
 }
 
 func (idx *indexer) bulkUpdateError(instIdList []common.IndexInstId,
