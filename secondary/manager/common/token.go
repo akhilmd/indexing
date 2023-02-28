@@ -1877,7 +1877,34 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 
 	// TODO: List and filter build tokens - BuildCommandToken doesn't have BucketUUID
 
-	// TODO: List and filter schedule tokens
+	// Check schedule tokens
+
+	schCreateTokens, err := ListAllScheduleCreateTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	stopSchCreateTokens, err := ListAllStopScheduleCreateTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	stopSchCreateTokensMap := make(map[common.IndexDefnId]bool)
+	for _, stopSchCreateToken := range stopSchCreateTokens {
+		stopSchCreateTokensMap[stopSchCreateToken.DefnId] = true
+	}
+
+	for _, schCreateToken := range schCreateTokens {
+		// Filter schedule create tokens for bucket
+		if bucketUUID != schCreateToken.BucketUUID {
+			continue
+		}
+
+		// Match with stop schedule create token
+		if _, matchExists := stopSchCreateTokensMap[schCreateToken.Definition.DefnId]; !matchExists {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", schCreateToken.Definition.DefnId))
+		}
+	}
 
 	return len(inProgDefns) > 0, inProgDefns, nil
 }
