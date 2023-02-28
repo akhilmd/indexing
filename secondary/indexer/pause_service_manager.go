@@ -28,6 +28,7 @@ import (
 	"github.com/couchbase/cbauth/service"
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/indexing/secondary/logging"
+	mc "github.com/couchbase/indexing/secondary/manager/common"
 	"github.com/couchbase/plasma"
 )
 
@@ -805,6 +806,17 @@ func (m *PauseServiceManager) PreparePause(params service.PauseParams) (err erro
 		return err
 	}
 
+	// Check for DDL command tokens
+	if inProg, inProgDefns, err := m.checkInProgressCommandTokensForBucket(params.Bucket); err != nil {
+		return err
+	} else if inProg {
+		err = fmt.Errorf("found in progress DDL command tokens for bucket[%v] defns[%v]",
+			params.Bucket, inProgDefns)
+		logging.Errorf("PauseServiceManager::PreparePause: err[%v]", err)
+
+		return err
+	}
+
 	// TODO: Check remotePath access?
 
 	// Set bst_PREPARE_PAUSE state
@@ -1311,6 +1323,17 @@ func (m *PauseServiceManager) PrepareResume(params service.ResumeParams) (err er
 	if ddlRunning, inProgressIndexName := m.checkDDLRunningForBucket(params.Bucket); ddlRunning {
 		err = fmt.Errorf("DDL is running for indexes [%v]", inProgressIndexName)
 		logging.Errorf("PauseServiceManager::PrepareResume: Found indexes with DDL in progress: err[%v]", err)
+		return err
+	}
+
+	// Check for DDL command tokens
+	if inProg, inProgDefns, err := m.checkInProgressCommandTokensForBucket(params.Bucket); err != nil {
+		return err
+	} else if inProg {
+		err = fmt.Errorf("found in progress DDL command tokens for bucket[%v] defns[%v]",
+			params.Bucket, inProgDefns)
+		logging.Errorf("PauseServiceManager::PrepareResume: err[%v]", err)
+
 		return err
 	}
 
@@ -2614,4 +2637,22 @@ func (m *PauseServiceManager) checkDDLRunningForBucket(bucketName string) (bool,
 	inProgressIndexNames := msg.(*MsgDDLInProgressResponse).GetInProgressIndexNames()
 
 	return ddlInProgress, inProgressIndexNames
+}
+
+func (m *PauseServiceManager) checkInProgressCommandTokensForBucket(bucketName string) (_ bool, _ []string, err error) {
+
+	if err := m.genericMgr.cinfo.FetchBucketInfo(bucketName); err != nil {
+		return false, nil, err
+	}
+
+	m.genericMgr.cinfo.RLock()
+	bucketUUID := m.genericMgr.cinfo.GetBucketUUID(bucketName)
+	m.genericMgr.cinfo.RUnlock()
+
+	inProg, inProgDefns, err := mc.CheckInProgressCommandTokensForBucket(bucketUUID)
+	if err != nil {
+		return false, nil, err
+	}
+
+	return inProg, inProgDefns, nil
 }

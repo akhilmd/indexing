@@ -355,6 +355,32 @@ func ListAndFetchCreateCommandToken(defnId c.IndexDefnId) ([]*CreateCommandToken
 	return result, nil
 }
 
+func ListAndFetchAllCreateCommandTokens() (result []*CreateCommandToken, err error) {
+
+	paths, err := c.MetakvBigValueList(CreateDDLCommandTokenPath)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, path := range paths {
+
+		token := &CreateCommandToken{}
+		exists, err := c.MetakvBigValueGet(path, token)
+
+		if err != nil {
+			logging.Errorf("ListAndFetchAllCreateCommandTokens: path %v err %v", path, err)
+			return nil, err
+		}
+
+		if exists {
+			result = append(result, token)
+		}
+
+	}
+
+	return result, nil
+}
+
 func GetDefnIdFromCreateCommandTokenPath(path string) (c.IndexDefnId, uint64, error) {
 
 	if len(path) <= len(CreateDDLCommandTokenPath) {
@@ -1817,4 +1843,41 @@ func EnablePlasmaInMemoryCompressionTokenExist() (bool, error) {
 
 	commandToken := &PlasmaInMemoryCompresisonToken{}
 	return c.MetakvGet(PlasmaInMemoryCompressionFeaturePath, commandToken)
+}
+
+func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDefns []string, err error) {
+
+	// List create tokens
+	createCmdTokens, err := ListAndFetchAllCreateCommandTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter creates for bucket
+	for _, createCmdToken := range createCmdTokens {
+		if bucketUUID == createCmdToken.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", createCmdToken.DefnId))
+		}
+	}
+
+	// TODO: List and filter delete tokens - DeleteCommandToken doesn't have BucketUUID
+
+	// List drop tokens
+	dropCmdTokens, err := ListAndFetchAllDropInstanceCommandToken(1)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter drops for bucket
+	for _, dropCmdToken := range dropCmdTokens {
+		if bucketUUID == dropCmdToken.Defn.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", dropCmdToken.DefnId))
+		}
+	}
+
+	// TODO: List and filter build tokens - BuildCommandToken doesn't have BucketUUID
+
+	// TODO: List and filter schedule tokens
+
+	return len(inProgDefns) > 0, inProgDefns, nil
 }
