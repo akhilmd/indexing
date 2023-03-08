@@ -836,6 +836,16 @@ func (m *PauseServiceManager) PreparePause(params service.PauseParams) (err erro
 		return err
 	}
 
+	// Make sure indexes created with defer_build are built and in active state
+	if deferredIndexNotActive, err := m.checkAnyNotActiveDeferredIndex(params.Bucket); err != nil {
+		return err
+	} else if deferredIndexNotActive {
+		err = fmt.Errorf("found deferred index not in INDEX_STATE_ACTIVE")
+		logging.Errorf("PauseServiceManager::PreparePause: err[%v]", err)
+
+		return err
+	}
+
 	// TODO: Check remotePath access?
 
 	// Set bst_PREPARE_PAUSE state
@@ -1366,7 +1376,7 @@ func (m *PauseServiceManager) PrepareResume(params service.ResumeParams) (err er
 		return err
 	}
 
-	// Indexes for this bucket do not exist yet, no need to check if they are caught up
+	// Indexes for this bucket do not exist yet, no need to check if they are caught up or deferred
 
 	// TODO: Check remotePath access?
 
@@ -2722,4 +2732,40 @@ func (m *PauseServiceManager) checkIndexesCaughtUp(bucketName string) bool {
 	}
 
 	return true
+}
+
+func (m *PauseServiceManager) checkAnyNotActiveDeferredIndex(bucketName string) (bool, error) {
+
+	localMeta, err := getLocalMeta(m.httpAddr)
+	if err != nil {
+		return false, err
+	}
+
+	deferredDefnIds := make(map[common.IndexDefnId]bool)
+	for _, defn := range localMeta.IndexDefinitions {
+		if defn.Bucket == bucketName && defn.Deferred {
+			deferredDefnIds[defn.DefnId] = true
+		}
+	}
+
+	for _, topology := range localMeta.IndexTopologies {
+		if topology.Bucket != bucketName {
+			continue
+		}
+
+		for _, defn := range topology.Definitions {
+			if isDeferred, ok := deferredDefnIds[common.IndexDefnId(defn.DefnId)]; (ok && !isDeferred) || !ok {
+				// skip if it is not deferred or cannot determine if it is deferred
+				continue
+			}
+
+			for _, inst := range defn.Instances {
+				if common.IndexState(inst.State) != common.INDEX_STATE_ACTIVE {
+					return true, nil
+				}
+			}
+		}
+	}
+
+	return false, nil
 }
