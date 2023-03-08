@@ -1434,14 +1434,14 @@ func (m *PauseServiceManager) Resume(params service.ResumeParams) error {
 				err, params.ID)
 			return err
 		}
-	
+
 		if err := m.initStartPhase(params.Bucket, params.ID, PauseTokenResume); err != nil {
 			logging.Errorf("%v couldn't start resume; err: %v for task ID: %v", _Resume, err, params.ID)
 			if cerr := m.runResumeCleanupPhase(params.ID, task.isMaster()); cerr != nil {
 				logging.Errorf("PauseServiceManager::Resume: Encountered cerr[%v] during cleanup for err[%v]", cerr, err)
 				return cerr
 			}
-	
+
 			return err
 		}
 
@@ -2700,6 +2700,7 @@ func (m *PauseServiceManager) checkDDLRunningForBucket(bucketName string) (bool,
 
 func (m *PauseServiceManager) checkInProgressCommandTokensForBucket(bucketName string) (_ bool, _ []string, err error) {
 
+	// TODO: dry run won't have the bucket info
 	if err := m.genericMgr.cinfo.FetchBucketInfo(bucketName); err != nil {
 		return false, nil, err
 	}

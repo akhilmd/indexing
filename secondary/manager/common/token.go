@@ -92,12 +92,18 @@ type DeleteCommandToken struct {
 	Bucket   string
 	DefnId   c.IndexDefnId
 	Internal bool
+
+	// Only populated for serverless
+	BucketUUID string
 }
 
 type BuildCommandToken struct {
 	Name   string
 	Bucket string
 	DefnId c.IndexDefnId
+
+	// Only populated for serverless
+	BucketUUID string
 }
 
 type DropInstanceCommandTokenList struct {
@@ -466,11 +472,12 @@ func MarshallCreateCommandTokenList(r *CreateCommandTokenList) ([]byte, error) {
 //
 // Generate a token to metakv for recovery purpose
 //
-func PostDeleteCommandToken(defnId c.IndexDefnId, internal bool) error {
+func PostDeleteCommandToken(defnId c.IndexDefnId, internal bool, bucketUUID string) error {
 
 	commandToken := &DeleteCommandToken{
-		DefnId:   defnId,
-		Internal: internal,
+		DefnId:     defnId,
+		Internal:   internal,
+		BucketUUID: bucketUUID,
 	}
 
 	id := fmt.Sprintf("%v", defnId)
@@ -654,10 +661,11 @@ func FetchIndexDefnToDeleteCommandTokensMap() (map[c.IndexDefnId]*DeleteCommandT
 //
 // Generate a token to metakv for recovery purpose
 //
-func PostBuildCommandToken(defnId c.IndexDefnId) error {
+func PostBuildCommandToken(defnId c.IndexDefnId, bucketUUID string) error {
 
 	commandToken := &BuildCommandToken{
-		DefnId: defnId,
+		DefnId:     defnId,
+		BucketUUID: bucketUUID,
 	}
 
 	id := fmt.Sprintf("%v", defnId)
@@ -721,6 +729,23 @@ func FetchIndexDefnToBuildCommandTokensMap() (map[c.IndexDefnId]*BuildCommandTok
 			return nil, err
 		}
 		result[token.DefnId] = token
+	}
+
+	return result, nil
+}
+
+func ListBuildCommandTokens() (result []*BuildCommandToken, err error) {
+	entries, err := c.MetakvList(BuildDDLCommandTokenPath)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		token := &BuildCommandToken{}
+		if err = json.Unmarshal(entry.Value, token); err != nil {
+			return nil, err
+		}
+		result = append(result, token)
 	}
 
 	return result, nil
@@ -1860,7 +1885,18 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 		}
 	}
 
-	// TODO: List and filter delete tokens - DeleteCommandToken doesn't have BucketUUID
+	// List delete tokens
+	deleteCmdTokens, err := ListDeleteCommandToken()
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter deletes for bucket
+	for _, deleteCmdToken := range deleteCmdTokens {
+		if bucketUUID == deleteCmdToken.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", deleteCmdToken.DefnId))
+		}
+	}
 
 	// List drop tokens
 	dropCmdTokens, err := ListAndFetchAllDropInstanceCommandToken(1)
@@ -1875,7 +1911,18 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 		}
 	}
 
-	// TODO: List and filter build tokens - BuildCommandToken doesn't have BucketUUID
+	// List build tokens
+	buildCmdTokens, err := ListBuildCommandTokens()
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Filter builds for bucket
+	for _, buildCmdToken := range buildCmdTokens {
+		if bucketUUID == buildCmdToken.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", buildCmdToken.DefnId))
+		}
+	}
 
 	// Check schedule tokens
 
