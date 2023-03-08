@@ -828,6 +828,14 @@ func (m *PauseServiceManager) PreparePause(params service.PauseParams) (err erro
 		return err
 	}
 
+	// Make sure all indexes are caught up
+	if !m.checkIndexesCaughtUp(params.Bucket) {
+		err = fmt.Errorf("found indexes with non-zero pending or queued mutations")
+		logging.Errorf("PauseServiceManager::PreparePause: err[%v]", err)
+
+		return err
+	}
+
 	// TODO: Check remotePath access?
 
 	// Set bst_PREPARE_PAUSE state
@@ -1357,6 +1365,8 @@ func (m *PauseServiceManager) PrepareResume(params service.ResumeParams) (err er
 
 		return err
 	}
+
+	// Indexes for this bucket do not exist yet, no need to check if they are caught up
 
 	// TODO: Check remotePath access?
 
@@ -2697,4 +2707,19 @@ func (m *PauseServiceManager) checkRebalanceRunning() (rebalanceRunning bool, er
 	}
 
 	return true, nil
+}
+
+func (m *PauseServiceManager) checkIndexesCaughtUp(bucketName string) bool {
+
+	allStats := m.genericMgr.statsMgr.stats.Get()
+
+	for _, idxSts := range allStats.indexes {
+		if idxSts.bucket == bucketName &&
+			idxSts.numDocsPending.Value() > 0 &&
+			idxSts.numDocsQueued.Value() > 0 {
+			return false
+		}
+	}
+
+	return true
 }
