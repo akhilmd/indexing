@@ -474,6 +474,8 @@ func MarshallCreateCommandTokenList(r *CreateCommandTokenList) ([]byte, error) {
 //
 func PostDeleteCommandToken(defnId c.IndexDefnId, internal bool, bucketUUID string) error {
 
+	// TODO: add bucketName instead uuid
+
 	commandToken := &DeleteCommandToken{
 		DefnId:     defnId,
 		Internal:   internal,
@@ -1880,9 +1882,9 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 
 	// Filter creates for bucket
 	for _, createCmdToken := range createCmdTokens {
-		if bucketUUID == createCmdToken.BucketUUID {
-			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", createCmdToken.DefnId))
-		}
+		//if bucketUUID == createCmdToken.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("c [%v]", createCmdToken))
+		//}
 	}
 
 	// List delete tokens
@@ -1893,9 +1895,9 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 
 	// Filter deletes for bucket
 	for _, deleteCmdToken := range deleteCmdTokens {
-		if bucketUUID == deleteCmdToken.BucketUUID {
-			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", deleteCmdToken.DefnId))
-		}
+		//if bucketUUID == deleteCmdToken.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("de [%v]", deleteCmdToken))
+		//}
 	}
 
 	// List drop tokens
@@ -1906,9 +1908,9 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 
 	// Filter drops for bucket
 	for _, dropCmdToken := range dropCmdTokens {
-		if bucketUUID == dropCmdToken.Defn.BucketUUID {
-			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", dropCmdToken.DefnId))
-		}
+		//if bucketUUID == dropCmdToken.Defn.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("dr [%v]", dropCmdToken.Defn.BucketUUID))
+		//}
 	}
 
 	// List build tokens
@@ -1919,9 +1921,9 @@ func CheckInProgressCommandTokensForBucket(bucketUUID string) (_ bool, inProgDef
 
 	// Filter builds for bucket
 	for _, buildCmdToken := range buildCmdTokens {
-		if bucketUUID == buildCmdToken.BucketUUID {
-			inProgDefns = append(inProgDefns, fmt.Sprintf("DefnId[%v]", buildCmdToken.DefnId))
-		}
+		//if bucketUUID == buildCmdToken.BucketUUID {
+			inProgDefns = append(inProgDefns, fmt.Sprintf("b [%v]", buildCmdToken))
+		//}
 	}
 
 	// Check schedule tokens

@@ -2696,7 +2696,7 @@ func (m *PauseServiceManager) checkDDLRunningForBucket(bucketName string) (bool,
 
 func (m *PauseServiceManager) checkInProgressCommandTokensForBucket(bucketName string) (_ bool, _ []string, err error) {
 
-	// TODO: dry run won't have the bucket info
+	// TODO: dry run won't have the bucket info - use bucket name - avoid cinfo
 	if err := m.genericMgr.cinfo.FetchBucketInfo(bucketName); err != nil {
 		return false, nil, err
 	}

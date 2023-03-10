@@ -10,9 +10,11 @@ package indexer
 
 import (
 	"fmt"
+	mc "github.com/couchbase/indexing/secondary/manager/common"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/couchbase/cbauth/service"
 	"github.com/couchbase/indexing/secondary/common"
@@ -105,6 +107,36 @@ func NewGenericServiceManager(mux *http.ServeMux, httpAddr string, rebalSupvCmdc
 	// Unit test REST APIs -- THESE MUST STILL DO AUTHENTICATION!!
 	mux.HandleFunc("/test/CancelTask", genericMgr.testCancelTask)
 	mux.HandleFunc("/test/GetTaskList", genericMgr.testGetTaskList)
+
+	go func() {
+		logging.Infof("amd: sleeping")
+		time.Sleep(20 * time.Second)
+		if err := m.cinfo.Fetch(); err != nil {
+			logging.Infof("amd: ERROR0 [%v]", err)
+			return
+		}
+		if err := m.cinfo.FetchBucketInfo("default"); err != nil {
+			logging.Infof("amd: ERROR [%v]", err)
+			return
+		}
+		logging.Infof("amd: fetched buvcet indfo")
+
+		m.cinfo.RLock()
+		bucketUUID := m.cinfo.GetBucketUUID("default")
+		m.cinfo.RUnlock()
+		logging.Infof("amd: looping.. buiid[%v]", bucketUUID)
+		for {
+			time.Sleep(1*time.Second)
+
+			inProg, inProgDefns, err := mc.CheckInProgressCommandTokensForBucket(bucketUUID)
+			if err != nil {
+				logging.Infof("amd: ERROR2 [%v]", err)
+				return
+			}
+
+			logging.Infof("amd: res inProg[%v] inProgDefns[%v]", inProg, inProgDefns)
+		}
+	}()
 
 	return m, pauseMgr, rebalMgr
 }
