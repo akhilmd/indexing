@@ -151,6 +151,9 @@ func (c *clustMgrAgent) handleSupvervisorCommands(cmd Message) {
 	case CLUST_MGR_DEL_LOCAL:
 		c.handleDelLocalValue(cmd)
 
+	case CLUST_MGR_GET_LOCAL_WITH_PREFIX:
+		c.handleGetLocalValuesWithPrefix(cmd)
+
 	case CLUST_MGR_DEL_KEYSPACE:
 		c.handleDeleteKeyspace(cmd)
 
@@ -610,6 +613,25 @@ func (c *clustMgrAgent) handleDelLocalValue(cmd Message) {
 	}
 
 }
+
+func (c *clustMgrAgent) handleGetLocalValuesWithPrefix(cmd Message) {
+
+	key := cmd.(*MsgClustMgrLocal).GetKey()
+
+	logging.Infof("ClustMgr:handleGetLocalValuesWithPrefix Key %v", key)
+
+	// Use key as prefix
+	values, err := c.mgr.GetLocalValuesWithKeyPrefix(key)
+
+	c.supvCmdch <- &MsgClustMgrLocal{
+		mType:  CLUST_MGR_GET_LOCAL_WITH_PREFIX,
+		key:    key,
+		values: values,
+		err:    err,
+	}
+
+}
+
 
 func (c *clustMgrAgent) handleDeleteKeyspace(cmd Message) {
 
