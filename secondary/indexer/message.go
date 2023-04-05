@@ -101,6 +101,7 @@ const (
 	CLUST_MGR_GET_LOCAL
 	CLUST_MGR_SET_LOCAL
 	CLUST_MGR_DEL_LOCAL
+	CLUST_MGR_GET_LOCAL_WITH_PREFIX
 	CLUST_MGR_DEL_KEYSPACE
 	CLUST_MGR_INDEXER_READY
 	CLUST_MGR_REBALANCE_RUNNING
@@ -210,6 +211,7 @@ const (
 	METERING_MGR_STOP_WRITE_BILLING
 	METERING_MGR_START_WRITE_BILLING
 	PAUSE_UPDATE_BUCKET_STATE
+	PANIC
 )
 
 type Message interface {
@@ -2239,6 +2241,7 @@ type MsgClustMgrLocal struct {
 	respch            MsgChannel
 	checkDDL          bool
 	inProgressIndexes []string
+	values            []string
 }
 
 func (m *MsgClustMgrLocal) GetMsgType() MsgType {
@@ -2267,6 +2270,10 @@ func (m *MsgClustMgrLocal) GetCheckDDL() bool {
 
 func (m *MsgClustMgrLocal) GetInProgressIndexes() []string {
 	return m.inProgressIndexes
+}
+
+func (m *MsgClustMgrLocal) GetValues() []string {
+	return m.values
 }
 
 type MsgConfigUpdate struct {

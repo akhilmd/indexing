@@ -199,6 +199,8 @@ type indexer struct {
 	rebalanceRunning bool
 	rebalanceToken   *RebalanceToken
 
+	pauseTokens map[string]*PauseToken
+
 	mergePartitionList []mergeSpec
 	prunePartitionList []pruneSpec
 	merged             map[common.IndexInstId]common.IndexInst
@@ -308,6 +310,8 @@ func NewIndexer(config common.Config) (Indexer, Message) {
 
 		indexInstMap:  make(common.IndexInstMap),
 		indexPartnMap: make(IndexPartnMap),
+
+		pauseTokens: make(map[string]*PauseToken),
 
 		merged: make(map[common.IndexInstId]common.IndexInst),
 		pruned: make(map[common.IndexInstId]common.IndexInst),
@@ -554,7 +558,7 @@ func NewIndexer(config common.Config) (Indexer, Message) {
 	// Start Generic Service Manager, which creates Pause and Rebalance Managers it delegates to
 	genericMgr, pauseMgr, rebalMgr := NewGenericServiceManager(httpMux, httpAddr, idx.rebalMgrCmdCh, idx.prMgrCmdCh,
 		idx.wrkrRecvCh, idx.wrkrPrioRecvCh, idx.config, idx.nodeInfo, idx.rebalanceRunning,
-		idx.rebalanceToken, idx.statsMgr)
+		idx.rebalanceToken, idx.pauseTokens, idx.statsMgr)
 
 	serverlessMgr := NewServerlessManager(clusterAddr)
 
@@ -1520,6 +1524,9 @@ func (idx *indexer) handleWorkerMsgs(msg Message) {
 
 	case CLUST_MGR_DEL_LOCAL:
 		idx.handleDelLocalMeta(msg)
+
+	case CLUST_MGR_GET_LOCAL_WITH_PREFIX:
+		idx.handleGetLocalMetaWithPrefix(msg)
 
 	case INDEXER_CHECK_DDL_IN_PROGRESS:
 		idx.handleCheckDDLInProgress(msg)
@@ -7990,6 +7997,7 @@ func (idx *indexer) checkDuplicateDropRequest(indexInst common.IndexInst,
 func (idx *indexer) bootstrap1(snapshotNotifych []chan IndexSnapshot, snapshotReqCh []MsgChannel) error {
 
 	idx.recoverRebalanceState()
+	idx.recoverPauseResumeState()
 
 	start := time.Now()
 	err := idx.recoverIndexInstMap()
@@ -8414,6 +8422,44 @@ func (idx *indexer) recoverRebalanceState() {
 	}
 
 	logging.Infof("Indexer::recoverRebalanceState RebalanceRunning %v RebalanceToken %v", idx.rebalanceRunning, idx.rebalanceToken)
+}
+
+func (idx *indexer) recoverPauseResumeState() {
+
+	clustMgrMsg := &MsgClustMgrLocal{
+		mType: CLUST_MGR_GET_LOCAL_WITH_PREFIX,
+		key:   PauseTokenTag,
+	}
+
+	respMsg, _ := idx.sendMsgToClustMgr(clustMgrMsg)
+	resp := respMsg.(*MsgClustMgrLocal)
+
+	if err := resp.GetError(); err == nil {
+		values := resp.GetValues()
+
+		for _, value := range values {
+			var pauseToken PauseToken
+			if err = json.Unmarshal([]byte(value), &pauseToken); err != nil {
+				logging.Errorf("Indexer::recoverPauseResumeState: Error Unmarshalling PauseToken: err[%v]", err)
+				common.CrashOnError(err)
+			}
+
+			if opt, exists := idx.pauseTokens[pauseToken.PauseId]; exists {
+				err = fmt.Errorf("duplicate PauseToken pauseId[%v] pauseToken[%v] opt[%v]",
+					pauseToken.PauseId, pauseToken, opt)
+				logging.Errorf("Indexer::recoverPauseResumeState: err[%v]", err)
+				common.CrashOnError(err)
+			} else {
+				idx.pauseTokens[pauseToken.PauseId] = &pauseToken
+			}
+		}
+
+	} else if err != nil {
+		logging.Fatalf("Indexer::recoverPauseResumeState: Error Fetching PauseTokens From Local "+
+			"Meta Storage. Err %v", err)
+	}
+
+	logging.Infof("amd: Indexer::recoverPauseResumeState: pauseTokens[%v]", idx.pauseTokens)
 }
 
 func (idx *indexer) handleAddIndexInstanceAtWorker(msg Message) {
@@ -9768,6 +9814,11 @@ func (idx *indexer) handleSetLocalMeta(msg Message) {
 			if err := json.Unmarshal([]byte(value), &rebalToken); err == nil {
 				idx.rebalanceToken = &rebalToken
 			}
+		} else if strings.Contains(key, PauseTokenTag) {
+			var pauseToken PauseToken
+			if err := json.Unmarshal([]byte(value), &pauseToken); err == nil {
+				idx.pauseTokens[pauseToken.PauseId] = &pauseToken
+			}
 		}
 	}
 
@@ -9802,10 +9853,20 @@ func (idx *indexer) handleDelLocalMeta(msg Message) {
 			idx.rebalanceRunning = false
 		} else if key == RebalanceTokenTag {
 			idx.rebalanceToken = nil
+		} else if strings.HasPrefix(key, PauseTokenTag) {
+			delete(idx.pauseTokens, decodeKeyForLocalPauseToken(key))
 		}
 	}
 
 	respch <- respMsg
+}
+
+func (idx *indexer) handleGetLocalMetaWithPrefix(msg Message) {
+
+	respMsg, _ := idx.sendMsgToClustMgr(msg)
+	respch := msg.(*MsgClustMgrLocal).GetRespCh()
+	respch <- respMsg
+
 }
 
 func (idx *indexer) bulkUpdateError(instIdList []common.IndexInstId,

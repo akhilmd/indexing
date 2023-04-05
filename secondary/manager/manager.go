@@ -477,6 +477,29 @@ func (m *IndexManager) GetLocalValue(key string) (string, error) {
 	return m.repo.GetLocalValue(key)
 }
 
+func (m *IndexManager) GetLocalValuesWithKeyPrefix(keyPrefix string) (values []string, err error) {
+
+	itr, err := m.repo.GetLocalIterator()
+	if err != nil {
+		return nil, err
+	}
+	defer itr.Close()
+
+	for {
+		key, content, err := itr.Next()
+		if err != nil {
+			break
+		}
+
+		// Use c.server.GetIterator2(keyPrefix, "") instead?
+		if strings.HasPrefix(key, keyPrefix) {
+			values = append(values, string(content))
+		}
+	}
+
+	return values, nil
+}
+
 // Get an index definiton by id
 func (m *IndexManager) GetIndexDefnById(id common.IndexDefnId) (*common.IndexDefn, error) {
 	return m.repo.GetIndexDefnById(id)

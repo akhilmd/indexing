@@ -81,6 +81,9 @@ type PauseServiceManager struct {
 	resumersMapMu sync.Mutex
 
 	nodeInfo *service.NodeInfo
+
+	cleanupPending int32
+	indexerReady   bool
 }
 
 // NewPauseServiceManager is the constructor for the PauseServiceManager class.
@@ -91,7 +94,7 @@ type PauseServiceManager struct {
 //	httpAddr - host:port of the local node for Index Service HTTP calls
 func NewPauseServiceManager(genericMgr *GenericServiceManager, mux *http.ServeMux, supvCmdch,
 	supvMsgch MsgChannel, httpAddr string, config common.Config, nodeInfo *service.NodeInfo,
-) *PauseServiceManager {
+	pauseTokens map[string]*PauseToken) *PauseServiceManager {
 
 	m := &PauseServiceManager{
 		genericMgr: genericMgr,
@@ -111,8 +114,15 @@ func NewPauseServiceManager(genericMgr *GenericServiceManager, mux *http.ServeMu
 	}
 	m.config.Store(config)
 
+	for pauseId, pt := range pauseTokens {
+		m.pauseTokensById[pauseId] = pt
+	}
+	m.setCleanupPending(len(m.pauseTokensById) > 0)
+
 	// Save the singleton
 	SetPauseMgr(m)
+
+	// TODO: allow trivial cleanups to finish to reduce noise?
 
 	// Internal REST APIs
 	mux.HandleFunc("/pauseMgr/Pause", m.RestHandlePause)
@@ -127,6 +137,18 @@ func NewPauseServiceManager(genericMgr *GenericServiceManager, mux *http.ServeMu
 	go m.run()
 
 	return m
+}
+
+func (m *PauseServiceManager) isCleanupPending() bool {
+	return atomic.LoadInt32(&m.cleanupPending) == 1
+}
+
+func (m *PauseServiceManager) setCleanupPending(val bool) {
+	if val {
+		atomic.StoreInt32(&m.cleanupPending, 1)
+	} else {
+		atomic.StoreInt32(&m.cleanupPending, 0)
+	}
 }
 
 // Track Pauser based on pauseId. Pauser can be deleted by calling with nil Pauser. If there is already a Pauser with
@@ -248,12 +270,59 @@ func (psm *PauseServiceManager) handleConfigUpdate(cmd Message) {
 func (psm *PauseServiceManager) handleIndexerReady(cmd Message) {
 	psm.supvCmdch <- &MsgSuccess{}
 
-	go psm.recoverFromCrash()
+	go psm.recoverPauseResume()
 }
 
-func (psm *PauseServiceManager) recoverFromCrash() {
-	// TODO: add recovery logic here
-	logging.Infof("PauseServiceManager::recoverFromCrash: crash recovery called on Pause-Resume service manager")
+func (m *PauseServiceManager) recoverPauseResume() {
+	m.indexerReady = true
+
+	if m.isCleanupPending() {
+		for pauseId, pt := range m.pauseTokensById {
+			logging.Infof("PauseServiceManager::recoverPauseResume: Init Pending Cleanup for pauseId[%v]", pauseId)
+
+			switch pt.Type {
+
+			case PauseTokenPause:
+				ptFilter, putFilter := getPauseTokenFiltersByPauseId(pauseId)
+				pt, _, err := m.getCurrPauseTokens(ptFilter, putFilter)
+				if err != nil {
+					logging.Errorf("PauseServiceManager::recoverPauseResume: Error Fetching Pause Metakv Tokens:" +
+						"err[%v]", err)
+					common.CrashOnError(err)
+				}
+
+				if pt != nil {
+					if pt.MasterIP == string(m.nodeInfo.NodeID) {
+						m.runPauseCleanupPhase(pt.BucketName, pt.PauseId, true)
+					} else {
+						m.runPauseCleanupPhase(pt.BucketName, pt.PauseId, false)
+					}
+				}
+
+			case PauseTokenResume:
+				ptFilter, rdtFilter := getResumeTokenFiltersByResumeId(pauseId)
+				pt, _, err := m.getCurrResumeTokens(ptFilter, rdtFilter)
+				if err != nil {
+					logging.Errorf("PauseServiceManager::recoverPauseResume: Error Fetching Resume Metakv Tokens:" +
+						"err[%v]", err)
+					common.CrashOnError(err)
+				}
+
+				if pt != nil {
+					if pt.MasterIP == string(m.nodeInfo.NodeID) {
+						m.runResumeCleanupPhase(pt.BucketName, pt.PauseId, true)
+					} else {
+						m.runResumeCleanupPhase(pt.BucketName, pt.PauseId, false)
+					}
+				}
+
+			}
+		}
+	}
+
+	m.setCleanupPending(false)
+
+	// TODO: start pause resume janitor?
 }
 
 func (psm *PauseServiceManager) lockShards(shardIds []common.ShardId) error {
@@ -418,7 +487,7 @@ func (psm *PauseServiceManager) downloadShardsWithoutLock(
 			lastReportedProgress[stats.shardId] = currProg
 		case respMsg := <-respCh:
 			resp, ok := respMsg.(*MsgShardTransferResp)
-		
+
 			if !ok || resp == nil {
 				err := fmt.Errorf("either response channel got closed or sent an invalid response")
 				logging.Errorf("PauseServiceManager::downloadShardsWithLock: %v for taskId %v", err, taskId)
@@ -896,6 +965,11 @@ func (m *PauseServiceManager) PreparePause(params service.PauseParams) (err erro
 
 	// TODO: recover pause state in bootstrap1 and add checks here
 	// Fail Prepare if bootstrap cleanup is still pending
+	// TODO: should reject even if not for this bucket?
+	if m.isCleanupPending() {
+		err := fmt.Errorf("cleanup pending from previous failed/aborted pause/resume")
+		return err
+	}
 
 	// If master pauseToken is present, pause is still running, a pause must not be attempted by caller.
 	if opts, exists := m.findPauseTokensForBucket(params.Bucket); exists {
@@ -1180,6 +1254,14 @@ func (m *PauseServiceManager) runPauseCleanupPhase(bucket, pauseId string, isMas
 }
 
 type putFilterFn func(*common.PauseUploadToken) bool
+
+func getPauseTokenFilters() (ptFilterFn, putFilterFn) {
+	return func(_ *PauseToken) bool {
+			return true
+		}, func(_ *common.PauseUploadToken) bool {
+			return true
+		}
+}
 
 func getPauseTokenFiltersByPauseId(pauseId string) (ptFilterFn, putFilterFn) {
 	return func(pt *PauseToken) bool {
@@ -2629,6 +2711,11 @@ type PauseToken struct {
 	Error string
 }
 
+func (pt *PauseToken) String() string {
+	return fmt.Sprintf("pauseId[%s] bucketName[%s] typ[%v] masterIp[%s]",
+		pt.PauseId, pt.BucketName, pt.Type, pt.MasterIP)
+}
+
 func (m *PauseServiceManager) genPauseToken(masterIP, bucketName, pauseId string, typ PauseTokenType) *PauseToken {
 	cfg := m.config.Load()
 	return &PauseToken{
@@ -2687,6 +2774,15 @@ func (m *PauseServiceManager) findPauseTokensForBucket(bucketName string) (pts [
 
 func buildKeyForLocalPauseToken(pauseId string) string {
 	return fmt.Sprintf("%s_%s", PauseTokenTag, pauseId)
+}
+
+func decodeKeyForLocalPauseToken(key string) string {
+	parts := strings.Split(key, "_")
+	if len(parts) != 2 {
+		return ""
+	}
+
+	return parts[1]
 }
 
 func buildMetakvPathForPauseToken(pauseId string) string {

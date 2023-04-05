@@ -48,6 +48,7 @@ type RepoRef interface {
 	broadcast(name string, value []byte) error
 	deleteMeta(name string) error
 	newIterator() (*repo.RepoIterator, error)
+	newIterator2() (*repo.RepoIterator, error)
 	registerNotifier(notifier MetadataNotifier)
 	setLocalValue(name string, value string) error
 	getLocalValue(name string) (string, error)
@@ -208,6 +209,13 @@ func (c *MetadataRepo) GetLocalValue(key string) (string, error) {
 	defer c.mutex.RUnlock()
 
 	return c.repo.getLocalValue(key)
+}
+
+func (c *MetadataRepo) GetLocalIterator() (*repo.RepoIterator, error) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	return c.repo.newIterator2()
 }
 
 func (c *MetadataRepo) Close() {
@@ -861,6 +869,10 @@ func (c *LocalRepoRef) newIterator() (*repo.RepoIterator, error) {
 	return c.server.GetIterator("/", "")
 }
 
+func (c *LocalRepoRef) newIterator2() (*repo.RepoIterator, error) {
+	return c.server.GetIterator2("/", "")
+}
+
 func (c *LocalRepoRef) close() {
 
 	// c.server.Terminate() is idempotent
@@ -970,6 +982,10 @@ func newRemoteRepoRef(requestAddr string,
 }
 
 func (c *RemoteRepoRef) newIterator() (*repo.RepoIterator, error) {
+	return c.repository.NewIterator(repo.MAIN, "/", "")
+}
+
+func (c *RemoteRepoRef) newIterator2() (*repo.RepoIterator, error) {
 	return c.repository.NewIterator(repo.MAIN, "/", "")
 }
 
