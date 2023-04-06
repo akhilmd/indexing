@@ -265,14 +265,81 @@ func (psm *PauseServiceManager) handleConfigUpdate(cmd Message) {
 }
 
 func (psm *PauseServiceManager) handleIndexerReady(cmd Message) {
+
 	psm.supvCmdch <- &MsgSuccess{}
 
-	go psm.recoverFromCrash()
+	go psm.recoverPauseResume()
+
 }
 
-func (psm *PauseServiceManager) recoverFromCrash() {
-	// TODO: add recovery logic here
-	logging.Infof("PauseServiceManager::recoverFromCrash: crash recovery called on Pause-Resume service manager")
+func (m *PauseServiceManager) recoverPauseResume() {
+
+	defer logging.Infof("PauseServiceManager:recoverPauseResume: Done cleanup")
+
+	if !m.isCleanupPending() {
+		return
+	}
+
+	for pauseId, pt := range m.pauseTokensById {
+		logging.Infof("PauseServiceManager::recoverPauseResume: Init Pending Cleanup for pauseId[%v] pt[%v]",
+			pauseId, pt)
+
+		switch pt.Type {
+
+		case PauseTokenPause:
+			ptFilter, putFilter := getPauseTokenFiltersByPauseId(pauseId)
+			pt, _, err := m.getCurrPauseTokens(ptFilter, putFilter)
+			if err != nil {
+				logging.Errorf("PauseServiceManager::recoverPauseResume: Error Fetching Pause Metakv Tokens:" +
+					"err[%v]", err)
+				common.CrashOnError(err)
+			} else if pt == nil {
+				continue
+			}
+
+			if pt.MasterIP == string(m.nodeInfo.NodeID) {
+				if err := m.runPauseCleanupPhase(pt.BucketName, pt.PauseId, true); err != nil {
+					logging.Errorf("PauseServiceManager::recoverPauseResume: Failed to cleanup pause master:" +
+						"err[%v]", err)
+					common.CrashOnError(err)
+				}
+			} else {
+				if err := m.runPauseCleanupPhase(pt.BucketName, pt.PauseId, false); err != nil {
+					logging.Errorf("PauseServiceManager::recoverPauseResume: Failed to cleanup pause follower:" +
+						"err[%v]", err)
+					common.CrashOnError(err)
+				}
+			}
+
+		case PauseTokenResume:
+			ptFilter, rdtFilter := getResumeTokenFiltersByResumeId(pauseId)
+			pt, _, err := m.getCurrResumeTokens(ptFilter, rdtFilter)
+			if err != nil {
+				logging.Errorf("PauseServiceManager::recoverPauseResume: Error Fetching Resume Metakv Tokens:" +
+					"err[%v]", err)
+				common.CrashOnError(err)
+			} else if pt == nil {
+				continue
+			}
+
+			if pt.MasterIP == string(m.nodeInfo.NodeID) {
+				if err := m.runResumeCleanupPhase(pt.BucketName, pt.PauseId, true); err != nil {
+					logging.Errorf("PauseServiceManager::recoverPauseResume: Failed to cleanup resume master:" +
+						"err[%v]", err)
+					common.CrashOnError(err)
+				}
+			} else {
+				if err := m.runResumeCleanupPhase(pt.BucketName, pt.PauseId, false); err != nil {
+					logging.Errorf("PauseServiceManager::recoverPauseResume: Failed to cleanup resume follower:" +
+						"err[%v]", err)
+					common.CrashOnError(err)
+				}
+			}
+
+		}
+	}
+
+	m.setCleanupPending(false)
 }
 
 func (psm *PauseServiceManager) lockShards(shardIds []common.ShardId) error {
