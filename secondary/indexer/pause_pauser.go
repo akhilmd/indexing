@@ -781,7 +781,7 @@ func (p *Pauser) masterUploadPauseMetadata() error {
 //
 //	├── indexMetadata.json
 //	├── indexStats.json
-//	└── /plasma_storage/PauseResume/<bucketName>/<shardId>/
+//	└── /plasma_storage/PauseResume/<BucketName>/<shardId>/
 //		└── plasma shard data
 func (p *Pauser) followerUploadBucketData() (map[common.ShardId]string, error) {
 	cfg := p.pauseMgr.config.Load()

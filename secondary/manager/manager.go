@@ -477,13 +477,15 @@ func (m *IndexManager) GetLocalValue(key string) (string, error) {
 	return m.repo.GetLocalValue(key)
 }
 
-func (m *IndexManager) GetLocalValuesWithKeyPrefix(keyPrefix string) (values []string, err error) {
+func (m *IndexManager) GetLocalValuesWithKeyPrefix(keyPrefix string) (values map[string]string, err error) {
 
 	itr, err := m.repo.GetLocalValuesIterator()
 	if err != nil {
 		return nil, err
 	}
 	defer itr.Close()
+
+	values = make(map[string]string)
 
 	for {
 		key, content, err := itr.Next()
@@ -492,7 +494,7 @@ func (m *IndexManager) GetLocalValuesWithKeyPrefix(keyPrefix string) (values []s
 		}
 
 		if strings.HasPrefix(key, keyPrefix) {
-			values = append(values, string(content))
+			values[key] = string(content)
 		}
 	}
 

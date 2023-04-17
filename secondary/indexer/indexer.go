@@ -199,7 +199,8 @@ type indexer struct {
 	rebalanceRunning bool
 	rebalanceToken   *RebalanceToken
 
-	pauseTokens map[string]*PauseToken
+	pauseResumeRunningById *PauseResumeRunningMap
+	pauseTokens            map[string]*PauseToken
 
 	mergePartitionList []mergeSpec
 	prunePartitionList []pruneSpec
@@ -311,7 +312,8 @@ func NewIndexer(config common.Config) (Indexer, Message) {
 		indexInstMap:  make(common.IndexInstMap),
 		indexPartnMap: make(IndexPartnMap),
 
-		pauseTokens: make(map[string]*PauseToken),
+		pauseResumeRunningById: NewPauseResumeRunningMap(),
+		pauseTokens:            make(map[string]*PauseToken),
 
 		merged: make(map[common.IndexInstId]common.IndexInst),
 		pruned: make(map[common.IndexInstId]common.IndexInst),
@@ -558,7 +560,7 @@ func NewIndexer(config common.Config) (Indexer, Message) {
 	// Start Generic Service Manager, which creates Pause and Rebalance Managers it delegates to
 	genericMgr, pauseMgr, rebalMgr := NewGenericServiceManager(httpMux, httpAddr, idx.rebalMgrCmdCh, idx.prMgrCmdCh,
 		idx.wrkrRecvCh, idx.wrkrPrioRecvCh, idx.config, idx.nodeInfo, idx.rebalanceRunning,
-		idx.rebalanceToken, idx.pauseTokens, idx.statsMgr)
+		idx.rebalanceToken, idx.pauseResumeRunningById, idx.pauseTokens, idx.statsMgr)
 
 	serverlessMgr := NewServerlessManager(clusterAddr)
 
@@ -2002,6 +2004,22 @@ func (idx *indexer) handleCreateIndex(msg Message) {
 		}
 	}
 
+	// TODO: check for pauseToken as well
+	if running := idx.pauseResumeRunningById.IsRunning(indexInst.Defn.Bucket, ""); len(running) > 0 {
+		errStr := fmt.Sprintf("Indexer Cannot Process Create Index - Pause-Resume In Progress")
+		logging.Errorf("Indexer::handleCreateIndex %v", errStr)
+
+		if clientCh != nil {
+			clientCh <- &MsgError{
+				err: Error{code: ERROR_INDEXER_PAUSE_RESUME_IN_PROGRESS,
+					severity: FATAL,
+					cause:    errors.New(errStr),
+					category: INDEXER}}
+
+		}
+		return
+	}
+
 	//check if this is duplicate index instance
 	if ok := idx.checkDuplicateIndex(indexInst, clientCh); !ok {
 		return
@@ -2091,7 +2109,8 @@ func (idx *indexer) handleCreateIndex(msg Message) {
 			&MsgBuildIndex{
 				mType:         CLUST_MGR_BUILD_INDEX_DDL,
 				indexInstList: []common.IndexInstId{indexInst.InstId},
-				respCh:        clientCh})
+				respCh:        clientCh,
+				bucketList:    []string{indexInst.Defn.Bucket}})
 	}
 }
 
@@ -3371,6 +3390,7 @@ func (idx *indexer) updateStreamForRebalance(force bool) {
 func (idx *indexer) handleBuildIndex(msg Message) {
 	instIdList := msg.(*MsgBuildIndex).GetIndexList()
 	clientCh := msg.(*MsgBuildIndex).GetRespCh()
+	bucketList := msg.(*MsgBuildIndex).GetBucketList()
 	logging.Infof("Indexer::handleBuildIndex %v", instIdList)
 
 	// NOTE
@@ -3420,6 +3440,26 @@ func (idx *indexer) handleBuildIndex(msg Message) {
 				}
 				return
 			}
+		}
+	}
+
+	// TODO: check for pauseToken as well
+	for _, bucketName := range bucketList {
+		if running := idx.pauseResumeRunningById.IsRunning(bucketName, ""); len(running) > 0 {
+			errStr := fmt.Sprintf("Indexer Cannot Process Build Index - Pause-Resume In Progress")
+			logging.Errorf("Indexer::handleBuildIndex %v", errStr)
+
+			if clientCh != nil {
+				clientCh <- &MsgError{
+					err: Error{
+						code:     ERROR_INDEXER_PAUSE_RESUME_IN_PROGRESS,
+						severity: FATAL,
+						cause:    errors.New(errStr),
+						category: INDEXER,
+					},
+				}
+			}
+			return
 		}
 	}
 
@@ -3976,6 +4016,22 @@ func (idx *indexer) handleDropIndex(msg Message) (resp Message) {
 				return
 			}
 		}
+	}
+
+	// TODO: check for pauseToken as well
+	if running := idx.pauseResumeRunningById.IsRunning(indexInst.Defn.Bucket, ""); len(running) > 0 {
+		errStr := fmt.Sprintf("Indexer Cannot Process Drop Index - Pause-Resume In Progress")
+		logging.Errorf("Indexer::handleDropIndex %v", errStr)
+
+		if clientCh != nil {
+			clientCh <- &MsgError{
+				err: Error{code: ERROR_INDEXER_PAUSE_RESUME_IN_PROGRESS,
+					severity: FATAL,
+					cause:    errors.New(errStr),
+					category: INDEXER}}
+
+		}
+		return
 	}
 
 	idx.stats.RemoveIndexStats(indexInst)
@@ -8430,15 +8486,38 @@ func (idx *indexer) recoverRebalanceState() {
 
 func (idx *indexer) recoverPauseResumeState() {
 
-	defer logging.Infof("Indexer::recoverPauseResumeState: Recovered pauseTokens[%v] to cleanup", idx.pauseTokens)
+	defer logging.Infof("Indexer::recoverPauseResumeState: Recovered pauseResumeRunning[%v] pauseTokens[%v]"+
+		"to cleanup", idx.pauseResumeRunningById, idx.pauseTokens)
 
 	clustMgrMsg := &MsgClustMgrLocal{
 		mType: CLUST_MGR_GET_LOCAL_WITH_PREFIX,
-		key:   PauseTokenTag,
+		key:   PauseResumeRunning,
 	}
 
 	respMsg, _ := idx.sendMsgToClustMgr(clustMgrMsg)
 	resp := respMsg.(*MsgClustMgrLocal)
+
+	if err := resp.GetError(); err != nil {
+		logging.Fatalf("Indexer::recoverPauseResumeState: Error Fetching PauseResumeRunning flags From Local "+
+			"Meta Storage. Err %v", err)
+		return
+	}
+
+	for key, metaBytes := range resp.GetValues() {
+		_, id := decodePauseResumeRunningKey(key)
+		var rMeta *pauseResumeRunningMeta
+		if err := json.Unmarshal([]byte(metaBytes), &rMeta); err == nil {
+			idx.pauseResumeRunningById.SetRunning(rMeta.Typ, rMeta.BucketName, id)
+		}
+	}
+
+	clustMgrMsg = &MsgClustMgrLocal{
+		mType: CLUST_MGR_GET_LOCAL_WITH_PREFIX,
+		key:   PauseTokenTag,
+	}
+
+	respMsg, _ = idx.sendMsgToClustMgr(clustMgrMsg)
+	resp = respMsg.(*MsgClustMgrLocal)
 
 	if err := resp.GetError(); err != nil {
 		logging.Fatalf("Indexer::recoverPauseResumeState: Error Fetching PauseTokens From Local "+
@@ -9818,6 +9897,17 @@ func (idx *indexer) handleSetLocalMeta(msg Message) {
 			if err := json.Unmarshal([]byte(value), &rebalToken); err == nil {
 				idx.rebalanceToken = &rebalToken
 			}
+		} else if strings.Contains(key, PauseResumeRunning) {
+			_, id := decodePauseResumeRunningKey(key)
+			var rMeta pauseResumeRunningMeta
+			if err := json.Unmarshal([]byte(value), &rMeta); err == nil {
+				idx.pauseResumeRunningById.SetRunning(rMeta.Typ, rMeta.BucketName, id)
+			}
+
+			// Prechecks would have passed,  means no new slice drops, means no pending slice closures
+			// slices will get closed later as a part of bucket delete
+
+			// no need to tell clust mgr either
 		}
 	}
 
@@ -9852,6 +9942,9 @@ func (idx *indexer) handleDelLocalMeta(msg Message) {
 			idx.rebalanceRunning = false
 		} else if key == RebalanceTokenTag {
 			idx.rebalanceToken = nil
+		} else if strings.Contains(key,  PauseResumeRunning) {
+			_, id := decodePauseResumeRunningKey(key)
+			idx.pauseResumeRunningById.SetNotRunning(id)
 		}
 	}
 
