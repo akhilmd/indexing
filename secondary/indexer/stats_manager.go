@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/couchbase/plasma"
 	"hash/crc32"
 	"math"
 	"net/http"
@@ -39,8 +40,6 @@ import (
 	"github.com/couchbase/indexing/secondary/stubs/nitro/mm"
 	"github.com/couchbase/logstats/logstats"
 	"github.com/golang/snappy"
-
-	"github.com/couchbase/plasma"
 )
 
 var uptime time.Time // time this package was loaded; used as indexer boot time
@@ -51,6 +50,7 @@ const APPROX_METRIC_COUNT = 25
 var METRICS_PREFIX = "index_"
 var PLASMA_METRICS_PREFIX = METRICS_PREFIX + "storage_"
 var PLASMA_TENANT_METRICS_PREFIX = PLASMA_METRICS_PREFIX + "tenant_"
+var STORAGE_METRICS_PREFIX = "indexstorage_"
 
 // 0-2ms, 2ms-5ms, 5ms-10ms, 10ms-20ms, 20ms-30ms, 30ms-50ms, 50ms-100ms, 100ms-Inf
 var latencyDist = []int64{0, 2, 5, 10, 20, 30, 50, 100}
@@ -3352,6 +3352,88 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		out = append(out, []byte(fmt.Sprintf("# TYPE %vnum_tenants gauge\n", METRICS_PREFIX))...)
 		out = append(out, []byte(fmt.Sprintf("%vnum_tenants %v\n", METRICS_PREFIX, is.numTenants.Value()))...)
 	}
+
+	appendPlasmaAggrSts := func (sts *plasma.SStats, group string) {
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sinserts gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sinserts %v\n", STORAGE_METRICS_PREFIX, group, sts.Inserts))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%snum_lss_reads gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%snum_lss_reads %v\n", STORAGE_METRICS_PREFIX, group, sts.NumLSSReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%slss_blk_read_bs gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%slss_blk_read_bs %v\n", STORAGE_METRICS_PREFIX, group, sts.LSSBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sbytes_written gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sbytes_written %v\n", STORAGE_METRICS_PREFIX, group, sts.BytesWritten))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sbytes_incoming gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sbytes_incoming %v\n", STORAGE_METRICS_PREFIX, group, sts.BytesIncoming))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sresident_ratio gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sresident_ratio %v\n", STORAGE_METRICS_PREFIX, group, sts.ResidentRatio))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sfrag gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sfrag %v\n", STORAGE_METRICS_PREFIX, group, sts.LSSFrag))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%slookup_num_reads gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%slookup_num_reads %v\n", STORAGE_METRICS_PREFIX, group, sts.LookupNumLSSReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%slookup_lss_blk_read_bs gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%slookup_lss_blk_read_bs %v\n", STORAGE_METRICS_PREFIX, group, sts.LookupLSSBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_num_reads gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_num_reads %v\n", STORAGE_METRICS_PREFIX, group, sts.NumLSSCleanerReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_lss_blk_read_bs gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_lss_blk_read_bs %v\n", STORAGE_METRICS_PREFIX, group, sts.LSSCleanerBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleanlss_num_reads gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleanlss_num_reads %v\n", STORAGE_METRICS_PREFIX, group, sts.NumCleanLSSReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleanlss_lss_blk_read_bs gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleanlss_lss_blk_read_bs %v\n", STORAGE_METRICS_PREFIX, group, sts.CleanLSSBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_num_single_seg_pg gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_num_single_seg_pg %v\n", STORAGE_METRICS_PREFIX, group, sts.NumCleanerSingleSegPg))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_num_multi_seg_pg gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_num_multi_seg_pg %v\n", STORAGE_METRICS_PREFIX, group, sts.NumCleanerMultiSegPg))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_num_needs_flush_pg gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_num_needs_flush_pg %v\n", STORAGE_METRICS_PREFIX, group, sts.NumCleanerNeedsFlushPg))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scompacts gauge\n", STORAGE_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scompacts %v\n", STORAGE_METRICS_PREFIX, group, sts.Compacts))...)
+
+		// insert dist hist
+		idHist := sts.InsertsDistribution
+		nm := "inserts_distribution"
+		baseName := fmt.Sprintf("%v%s%s", STORAGE_METRICS_PREFIX, group, nm)
+		out = append(out, []byte(fmt.Sprintf("# TYPE %s histogram\n", baseName))...)
+		sum := idHist.GetSum()
+		buckets := idHist.GetBuckets()
+		buckets = buckets[1:]
+		vals := idHist.GetVals()
+
+		logging.Infof("amd: b len[%d] %v", len(buckets), buckets)
+		logging.Infof("amd: v len[%d] %v", len(vals), vals)
+
+		for i, bucket := range buckets {
+			val := vals[i]
+			st := fmt.Sprintf("%s_bucket{le=\"%03d\"} %d\n", baseName, bucket, val)
+			logging.Infof("amd: %s", st)
+			out = append(out, []byte(st)...)
+		}
+
+		out = append(out, []byte(fmt.Sprintf("%s_sum %d\n", baseName, sum))...)
+		out = append(out, []byte(fmt.Sprintf("%s_count %d\n", baseName, sum))...)
+	}
+
+	mSts := plasma.GetAggregatedStats2(MAIN_INDEX)
+	appendPlasmaAggrSts(mSts, "mainstore_")
+
+	bSts := plasma.GetAggregatedStats2(BACK_INDEX)
+	appendPlasmaAggrSts(bSts, "backstore_")
 
 	w.WriteHeader(200)
 	w.Write([]byte(out))

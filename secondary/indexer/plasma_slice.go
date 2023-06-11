@@ -386,6 +386,7 @@ func (slice *plasmaSlice) initStores(isInitialBuild bool) error {
 		cfg.LSSReadAheadSize = int64(slice.sysconf["plasma.logReadAheadSize"].Int())
 		cfg.CheckpointInterval = time.Second * time.Duration(slice.sysconf["plasma.checkpointInterval"].Int())
 		cfg.LSSCleanerConcurrency = slice.sysconf["plasma.LSSCleanerConcurrency"].Int()
+		cfg.LSSRewriteSingleSegPg = slice.sysconf["plasma.LSSRewriteSingleSegPg"].Bool()
 		cfg.LSSCleanerFlushInterval = time.Duration(slice.sysconf["plasma.LSSCleanerFlushInterval"].Int()) * time.Minute
 		cfg.LSSCleanerMinReclaimSize = int64(slice.sysconf["plasma.LSSCleanerMinReclaimSize"].Int())
 		cfg.AutoTuneLSSCleaning = slice.sysconf["plasma.AutoTuneLSSCleaner"].Bool()
@@ -2882,6 +2883,7 @@ func (mdb *plasmaSlice) UpdateConfig(cfg common.Config) {
 	mdb.sysconf = cfg
 
 	updatePlasmaConfig(cfg)
+	mdb.mainstore.LSSRewriteSingleSegPg = cfg["plasma.LSSRewriteSingleSegPg"].Bool()
 	mdb.mainstore.AutoTuneLSSCleaning = cfg["plasma.AutoTuneLSSCleaner"].Bool()
 	mdb.mainstore.AutoTuneDiskQuota = int64(cfg["plasma.AutoTuneDiskQuota"].Uint64())
 	mdb.mainstore.AutoTuneCleanerTargetFragRatio = cfg["plasma.AutoTuneCleanerTargetFragRatio"].Int()
@@ -2988,6 +2990,7 @@ func (mdb *plasmaSlice) UpdateConfig(cfg common.Config) {
 	mdb.mainstore.UpdateConfig()
 
 	if !mdb.isPrimary {
+		mdb.backstore.LSSRewriteSingleSegPg = cfg["plasma.LSSRewriteSingleSegPg"].Bool()
 		mdb.backstore.AutoTuneLSSCleaning = cfg["plasma.AutoTuneLSSCleaner"].Bool()
 		mdb.backstore.AutoTuneDiskQuota = int64(cfg["plasma.AutoTuneDiskQuota"].Uint64())
 		mdb.backstore.AutoTuneCleanerTargetFragRatio = cfg["plasma.AutoTuneCleanerTargetFragRatio"].Int()

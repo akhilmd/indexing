@@ -20,6 +20,10 @@ func main() {
 	FieldSize := flag.Int("FieldSize", -1, "Field size will be at least this much")
 	OpsPerSec := flag.Int("OpsPerSec", -1, "How many ops per sec")
 	Iterations := flag.Int("Iterations", -1, "How many times to repeat")
+	HotColdWorkLoad := flag.Bool("HotColdWorkLoad", false, "Do hot-cold workload?")
+	HotSizePerc := flag.Int("HotSizePerc", -1, "Percentage of index to be hot - from the beginnig")
+	HotMutPerc := flag.Int("HotMutPerc", -1, "Percentage of mutations to be hot")
+	Duration := flag.Int("Duration", -1, "Duration instead of iterations")
 
 	flag.Parse()
 	if *help {
@@ -73,5 +77,24 @@ func main() {
 		cfg.Iterations = *Iterations
 	}
 
-	randdocs.Run(cfg)
+	if *HotColdWorkLoad {
+		cfg.HotColdWorkload = *HotColdWorkLoad
+	}
+
+	if *HotSizePerc != -1 {
+		cfg.HotSizePerc = uint64(*HotSizePerc)
+	}
+
+	if *HotMutPerc != -1 {
+		cfg.HotMutPerc = *HotMutPerc
+	}
+
+	if *Duration != -1 {
+		cfg.Duration = *Duration
+	}
+
+	err = randdocs.Run(cfg)
+	if err != nil {
+		fmt.Println("randdocs err:", err)
+	}
 }

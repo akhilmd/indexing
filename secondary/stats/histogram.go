@@ -12,6 +12,19 @@ type Histogram struct {
 	vals       []int64
 	humanizeFn func(int64) string
 	bitmap     uint64
+	sum        int64
+}
+
+func (h *Histogram) GetSum() int64 {
+	return h.sum
+}
+
+func (h *Histogram) GetBuckets() []int64 {
+	return h.buckets
+}
+
+func (h *Histogram) GetVals() []int64 {
+	return h.vals
 }
 
 func (h *Histogram) Init(buckets []int64, humanizeFn func(int64) string) {
@@ -53,6 +66,7 @@ func (h *Histogram) InitLatency(buckets []int64, humanizeFn func(int64) string) 
 func (h *Histogram) Add(val int64) {
 	i := h.findBucket(val)
 	atomic.AddInt64(&h.vals[i], 1)
+	atomic.AddInt64(&h.sum, 1)
 }
 
 func (h *Histogram) Merge(src Histogram) {
@@ -73,6 +87,33 @@ func (h *Histogram) Merge(src Histogram) {
 	for i, val := range src.vals {
 		h.vals[i] += val
 	}
+
+	h.sum += src.sum
+}
+
+func (h *Histogram) Delta(src Histogram) Histogram {
+	if len(h.vals) != len(src.vals) {
+		return Histogram{}
+	}
+
+	if len(h.buckets) != len(src.buckets) {
+		return Histogram{}
+	}
+
+	for i, bucket := range src.buckets {
+		if h.buckets[i] != bucket {
+			return Histogram{}
+		}
+	}
+
+	var ret Histogram
+	ret.Init(h.buckets[1:len(h.buckets)-1], h.humanizeFn)
+	for i, val := range src.vals {
+		ret.vals[i] = h.vals[i] - val
+	}
+	ret.sum = h.sum - src.sum
+
+	return ret
 }
 
 func (h *Histogram) findBucket(val int64) int {
@@ -90,7 +131,7 @@ func (h *Histogram) findBucket(val int64) int {
 }
 
 func (h *Histogram) String() string {
-	s := "\""
+	s := fmt.Sprintf("\"sum=[%d]\t", h.sum)
 	l := len(h.vals)
 	for i := 0; i < l; i++ {
 

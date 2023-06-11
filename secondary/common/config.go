@@ -1402,6 +1402,13 @@ var SystemConfig = Config{
 		false, // mutable,
 		false, // case-insensitive
 	},
+	"indexer.plasma.LSSRewriteSingleSegPg": ConfigValue{
+		false,
+		"should enable LSSRewriteSingleSegPg?",
+		false,
+		false, // mutable,
+		false, // case-insensitive
+	},
 	"indexer.plasma.LSSCleanerFlushInterval": ConfigValue{
 		10,
 		"Minimum elapsed time for logCleaner to sync LSS (Minute)",
