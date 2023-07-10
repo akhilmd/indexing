@@ -31,7 +31,10 @@ type Config struct {
 
 	// Use 16 byte random docid
 	UseRandDocID bool
+
 	HotColdWorkload bool
+	HotDocWorkload bool
+
 	HotSizePerc uint64
 	HotMutPerc int
 
@@ -100,10 +103,12 @@ func Run(cfg Config) error {
 	fmt.Printf("For [%d%%] hot data, threshold is [%s]\n", cfg.HotSizePerc, hotPrefixThreshold)
 
 	hotColdWorkload := cfg.HotColdWorkload
+	hotDocWorkload := cfg.HotDocWorkload
 
 	mutStart := time.Now()
 	durr := time.Duration(cfg.Duration) * time.Minute
 	if hotColdWorkload {
+		fmt.Println("HotColdWorkload")
 		for itr := 0; itr < cfg.Iterations; itr++ {
 			var wg sync.WaitGroup
 			for thr := 0; thr < cfg.Threads; thr++ {
@@ -178,7 +183,78 @@ func Run(cfg Config) error {
 				break
 			}
 		}
+	} else if hotDocWorkload {
+		fmt.Println("HotDocWorkload")
+		for itr := 0; itr < cfg.Iterations; itr++ {
+			var wg sync.WaitGroup
+			for thr := 0; thr < cfg.Threads; thr++ {
+				wg.Add(1)
+				go func(offset int) {
+					fmt.Printf("thr offset[%d] num[%d]\n", offset, offset + cfg.NumDocs/cfg.Threads)
+					defer wg.Done()
+
+					for i := 0; i < cfg.NumDocs/cfg.Threads; i++ {
+						start := time.Now()
+						doHot := rndr.Intn(100) < cfg.HotMutPerc
+						tries := 0
+
+					retry:
+						tries++
+						roff := rndr.Intn(cfg.NumDocs)
+						gotHot := roff < ((cfg.NumDocs * int(cfg.HotSizePerc)) / 100)
+						if gotHot != doHot {
+							goto retry
+						}
+
+						// got the type we want!!
+
+						docidSeq := fmt.Sprintf("%0*d", cfg.DocIdLen, roff)[:cfg.DocIdLen]
+
+						docid := docidSeq
+						if cfg.UseRandDocID {
+							key := md5.Sum([]byte(docid))
+							docid = fmt.Sprintf("%x", key)[:cfg.DocIdLen]
+						}
+
+						prefix := docid[cfg.DocIdLen-PREFIX_LEN : cfg.DocIdLen]
+						suffix := randFromAlphabet(cfg.FieldSize, docid)
+
+						value := make(map[string]interface{})
+						value["body"] = fmt.Sprintf("%s-%s", prefix, suffix)
+
+						localErr := b.Set(docid, 0, value)
+						if localErr != nil {
+							fmt.Println(err)
+							err = localErr
+						}
+
+						m := atomic.AddInt64(&ttries, int64(tries))
+						if k := atomic.AddInt64(&cnt, 1); k%100000 == 0 {
+							fmt.Printf("Set %7d docs at %dops/sec with %.1ftries/op\n", k, k/(1+int64(time.Since(fullStart).Seconds())), float64(m)/float64(k))
+						}
+
+						dur := time.Since(start)
+						toSleep := sleepPerOp - dur
+						if toSleep > 0 {
+							time.Sleep(toSleep)
+						}
+
+						if durr > 0 && time.Since(mutStart) > durr {
+							return
+						}
+					}
+				}(thr * cfg.NumDocs / cfg.Threads)
+			}
+			wg.Wait()
+
+			fmt.Printf("Done setting [%d] docs at [%v]sets/sec and itr [%d]\n", cnt, cnt/(1+int64(time.Since(fullStart).Seconds())), itr)
+
+			if durr > 0 && time.Since(mutStart) > durr {
+				break
+			}
+		}
 	} else {
+		fmt.Println("Full Random")
 		for itr := 0; itr < cfg.Iterations; itr++ {
 			var wg sync.WaitGroup
 			for thr := 0; thr < cfg.Threads; thr++ {

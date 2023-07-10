@@ -21,6 +21,7 @@ func main() {
 	OpsPerSec := flag.Int("OpsPerSec", -1, "How many ops per sec")
 	Iterations := flag.Int("Iterations", -1, "How many times to repeat")
 	HotColdWorkLoad := flag.Bool("HotColdWorkLoad", false, "Do hot-cold workload?")
+	HotDocWorkLoad := flag.Bool("HotDocWorkLoad", false, "Do hot workload on docs?")
 	HotSizePerc := flag.Int("HotSizePerc", -1, "Percentage of index to be hot - from the beginnig")
 	HotMutPerc := flag.Int("HotMutPerc", -1, "Percentage of mutations to be hot")
 	Duration := flag.Int("Duration", -1, "Duration instead of iterations")
@@ -79,6 +80,10 @@ func main() {
 
 	if *HotColdWorkLoad {
 		cfg.HotColdWorkload = *HotColdWorkLoad
+	}
+
+	if *HotDocWorkLoad {
+		cfg.HotDocWorkload = *HotDocWorkLoad
 	}
 
 	if *HotSizePerc != -1 {

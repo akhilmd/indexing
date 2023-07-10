@@ -3001,6 +3001,7 @@ func (s *statsManager) RegisterRestEndpoints() {
 	mux.HandleFunc("/stats/mem", s.handleMemStatsReq)
 	mux.HandleFunc("/stats/storage/mm", s.handleStorageMMStatsReq)
 	mux.HandleFunc("/stats/storage", s.handleStorageStatsReq)
+	mux.HandleFunc("/stats/storage/aggr", s.handleStorageStatsAggrReq)
 	mux.HandleFunc("/stats/reset", s.handleStatsResetReq)
 	mux.HandleFunc("/storage/jemalloc/profile", s.jemallocMemoryProfileHandler)
 	mux.HandleFunc("/storage/jemalloc/profileActivate", s.jemallocMemoryProfileActivateHandler)
@@ -3405,6 +3406,67 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scompacts gauge\n", STORAGE_METRICS_PREFIX, group))...)
 		out = append(out, []byte(fmt.Sprintf("%v%scompacts %v\n", STORAGE_METRICS_PREFIX, group, sts.Compacts))...)
 
+		appendPlasmaAggrLSStoreStats := func(lsSts *plasma.LsStoreStats, src string) {
+			var name string
+			lsStsPrefix := fmt.Sprintf("%slsstore_", src)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "num_reads")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.NumReads))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "read_bytes")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.ReadBytes))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "num_reads_fb")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.NumReadsFB))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "read_bytes_fb")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.ReadBytesFB))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "num_reads_log")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.NumReadsLog))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "read_bytes_log")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.ReadBytesLog))...)
+
+			lsStsPrefix = fmt.Sprintf("%slsstore_logRead_", src)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "num_reads_readahead")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.LSStoreLogReadSts.NumReadsReadAhead))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "read_bytes_readahead")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.LSStoreLogReadSts.ReadBytesReadAhead))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "num_reads_log")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.LSStoreLogReadSts.NumReadsLog))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "read_bytes_log")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.LSStoreLogReadSts.ReadBytesLog))...)
+
+			lsStsPrefix = fmt.Sprintf("%slsstore_logRead_log_", src)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "num_reads")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.LSStoreLogReadSts.LogSts.NumReads))...)
+
+			name = fmt.Sprintf("%s%s", lsStsPrefix, "read_bytes")
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", STORAGE_METRICS_PREFIX, group, name))...)
+			out = append(out, []byte(fmt.Sprintf("%v%s%s %v\n", STORAGE_METRICS_PREFIX, group, name, lsSts.LSStoreLogReadSts.LogSts.ReadBytes))...)
+		}
+
+		appendPlasmaAggrLSStoreStats(sts.LSStoreStats, "total_")
+		appendPlasmaAggrLSStoreStats(sts.CleanerLSStoreStats, "cleaner_")
+		appendPlasmaAggrLSStoreStats(sts.CleanLSSLSStoreStats, "cleanLSS_")
+
 		// insert dist hist
 		idHist := sts.InsertsDistribution
 		nm := "inserts_distribution"
@@ -3415,13 +3477,13 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		buckets = buckets[1:]
 		vals := idHist.GetVals()
 
-		logging.Infof("amd: b len[%d] %v", len(buckets), buckets)
-		logging.Infof("amd: v len[%d] %v", len(vals), vals)
+		//logging.Infof("amd: b len[%d] %v", len(buckets), buckets)
+		//logging.Infof("amd: v len[%d] %v", len(vals), vals)
 
 		for i, bucket := range buckets {
 			val := vals[i]
 			st := fmt.Sprintf("%s_bucket{le=\"%03d\"} %d\n", baseName, bucket, val)
-			logging.Infof("amd: %s", st)
+			//logging.Infof("amd: %s", st)
 			out = append(out, []byte(st)...)
 		}
 
@@ -3620,6 +3682,24 @@ func (s *statsManager) getStorageStats(spec *statsSpec, creds cbauth.Creds) stri
 	return result.String()
 }
 
+type AggrStorageStats struct {
+	MainStore, BackStore interface{}
+}
+
+func (s *statsManager) getAggrStorageStats() string {
+	var sts AggrStorageStats
+	sts.MainStore = plasma.GetAggregatedStats2(MAIN_INDEX)
+	sts.BackStore = plasma.GetAggregatedStats2(BACK_INDEX)
+
+	bs, err := json.MarshalIndent(sts, "", "    ")
+	if err != nil {
+		logging.Infof("amd: error: [%v]", err)
+		return fmt.Sprintf("{\"error\": \"%v\"}", err)
+	}
+
+	return string(bs)
+}
+
 func (s *statsManager) handleStorageStatsReq(w http.ResponseWriter, r *http.Request) {
 	creds, valid, err := common.IsAuthValid(r)
 	if err != nil {
@@ -3668,6 +3748,36 @@ func (s *statsManager) handleStorageStatsReq(w http.ResponseWriter, r *http.Requ
 		if common.IndexerState(stats.indexerState.Value()) != common.INDEXER_BOOTSTRAP {
 			w.WriteHeader(200)
 			w.Write([]byte(s.getStorageStats(spec, creds)))
+		} else {
+			w.WriteHeader(200)
+			w.Write([]byte("Indexer In Warmup. Please try again later."))
+		}
+	} else {
+		w.WriteHeader(400)
+		w.Write([]byte("Unsupported method"))
+	}
+}
+
+func (s *statsManager) handleStorageStatsAggrReq(w http.ResponseWriter, r *http.Request) {
+	_, valid, err := common.IsAuthValid(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error() + "\n"))
+		return
+	} else if !valid {
+		audit.Audit(common.AUDIT_UNAUTHORIZED, r, "StatsManager::handleStorageStatsAggrReq", "")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write(common.HTTP_STATUS_UNAUTHORIZED)
+		return
+	}
+
+	if r.Method == "POST" || r.Method == "GET" {
+
+		stats := s.stats.Get()
+
+		if common.IndexerState(stats.indexerState.Value()) != common.INDEXER_BOOTSTRAP {
+			w.WriteHeader(200)
+			w.Write([]byte(s.getAggrStorageStats()))
 		} else {
 			w.WriteHeader(200)
 			w.Write([]byte("Indexer In Warmup. Please try again later."))

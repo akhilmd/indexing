@@ -131,7 +131,7 @@ func (h *Histogram) findBucket(val int64) int {
 }
 
 func (h *Histogram) String() string {
-	s := fmt.Sprintf("\"sum=[%d]\t", h.sum)
+	s := fmt.Sprintf("\"sum=[%d]  ", h.sum)
 	l := len(h.vals)
 	for i := 0; i < l; i++ {
 

@@ -1862,6 +1862,20 @@ var SystemConfig = Config{
 		false, // mutable
 		false, // case-insensitive
 	},
+	"indexer.plasma.mainIndex.swapinAfterLookup": ConfigValue{
+		false,
+		"Put page in cache after a lookup",
+		false,
+		false, // mutable
+		false, // case-insensitive
+	},
+	"indexer.plasma.backIndex.swapinAfterLookup": ConfigValue{
+		false,
+		"Put page in cache after a lookup",
+		false,
+		false, // mutable
+		false, // case-insensitive
+	},
 	"indexer.settings.enable_page_bloom_filter": ConfigValue{
 		false, // keep in sync with index_settings_manager.erl and indexer.plasma.backIndex.enablePageBloomFilter
 		"Enable maintenance and use of bloom filter for lookup of swapped out items",
