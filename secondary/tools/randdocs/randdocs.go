@@ -2,24 +2,26 @@ package randdocs
 
 import (
 	"bytes"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"math/big"
 	rnd "math/rand"
+	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/couchbase/indexing/secondary/common"
 )
-import "crypto/md5"
-import "fmt"
-import "sync"
-import "runtime"
-import "github.com/couchbase/indexing/secondary/common"
-import "strings"
-import "math/big"
 
 type Config struct {
 	ClusterAddr   string
 	Bucket        string
 	NumDocs       int
+	Ops           int
 	DocIdLen      int
 	FieldSize     int
 	ArrayLen      int
@@ -33,10 +35,10 @@ type Config struct {
 	UseRandDocID bool
 
 	HotColdWorkload bool
-	HotDocWorkload bool
+	HotDocWorkload  bool
 
 	HotSizePerc uint64
-	HotMutPerc int
+	HotMutPerc  int
 
 	Duration int
 }
@@ -63,6 +65,7 @@ func randString(n int) string {
 
 func Run(cfg Config) error {
 	rndr := rnd.New(rnd.NewSource(time.Now().UnixNano()))
+	var rndrs []*rnd.Rand
 
 	cfgBytes, err := json.MarshalIndent(cfg, "", "    ")
 	if err != nil {
@@ -114,7 +117,7 @@ func Run(cfg Config) error {
 			for thr := 0; thr < cfg.Threads; thr++ {
 				wg.Add(1)
 				go func(offset int) {
-					fmt.Printf("thr offset[%d] num[%d]\n", offset, offset + cfg.NumDocs/cfg.Threads)
+					fmt.Printf("thr offset[%d] num[%d]\n", offset, offset+cfg.NumDocs/cfg.Threads)
 					defer wg.Done()
 
 					for i := 0; i < cfg.NumDocs/cfg.Threads; i++ {
@@ -124,7 +127,7 @@ func Run(cfg Config) error {
 
 					retry:
 						tries++
-						roff := rndr.Intn(cfg.NumDocs/cfg.Threads)
+						roff := rndr.Intn(cfg.NumDocs / cfg.Threads)
 						docidSeq := fmt.Sprintf("%0*d", cfg.DocIdLen, roff+offset+cfg.DocNumOffset)[:cfg.DocIdLen]
 
 						docid := docidSeq
@@ -189,18 +192,19 @@ func Run(cfg Config) error {
 			var wg sync.WaitGroup
 			for thr := 0; thr < cfg.Threads; thr++ {
 				wg.Add(1)
-				go func(offset int) {
-					fmt.Printf("thr offset[%d] num[%d]\n", offset, offset + cfg.NumDocs/cfg.Threads)
+				rndrs = append(rndrs, rnd.New(rnd.NewSource(time.Now().UnixNano())))
+				go func(offset, id int) {
+					fmt.Printf("thr offset[%d] num[%d]\n", offset, offset+cfg.NumDocs/cfg.Threads)
 					defer wg.Done()
 
-					for i := 0; i < cfg.NumDocs/cfg.Threads; i++ {
+					for i := 0; i < cfg.Ops/cfg.Threads; i++ {
 						start := time.Now()
 						doHot := rndr.Intn(100) < cfg.HotMutPerc
 						tries := 0
 
 					retry:
 						tries++
-						roff := rndr.Intn(cfg.NumDocs)
+						roff := rndrs[id].Intn(cfg.NumDocs)
 						gotHot := roff < ((cfg.NumDocs * int(cfg.HotSizePerc)) / 100)
 						if gotHot != doHot {
 							goto retry
@@ -243,7 +247,7 @@ func Run(cfg Config) error {
 							return
 						}
 					}
-				}(thr * cfg.NumDocs / cfg.Threads)
+				}(thr*cfg.NumDocs/cfg.Threads, thr)
 			}
 			wg.Wait()
 

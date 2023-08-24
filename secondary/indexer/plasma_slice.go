@@ -495,6 +495,7 @@ func (slice *plasmaSlice) initStores(isInitialBuild bool) error {
 		mCfg.EvictUseMemEstimate = slice.sysconf["plasma.mainIndex.evictUseMemEstimate"].Bool()
 		mCfg.LogPrefix = fmt.Sprintf("%s/%s/Mainstore#%d:%d ", slice.idxDefn.Bucket, slice.idxDefn.Name, slice.idxInstId, slice.idxPartnId)
 		mCfg.SwapinAfterLookup = slice.sysconf["plasma.mainIndex.swapinAfterLookup"].Bool()
+		mCfg.TryEvictAfterRelocation = slice.sysconf["plasma.mainIndex.tryEvictAfterRelocation"].Bool()
 		mCfg.EnablePageBloomFilter = slice.sysconf["plasma.mainIndex.enablePageBloomFilter"].Bool()
 		mCfg.BloomFilterFalsePositiveRate = slice.sysconf["plasma.mainIndex.bloomFilterFalsePositiveRate"].Float64()
 		mCfg.BloomFilterExpectedMaxItems = slice.sysconf["plasma.mainIndex.bloomFilterExpectedMaxItems"].Uint64()
@@ -533,6 +534,7 @@ func (slice *plasmaSlice) initStores(isInitialBuild bool) error {
 		bCfg.EvictUseMemEstimate = slice.sysconf["plasma.backIndex.evictUseMemEstimate"].Bool()
 		bCfg.LogPrefix = fmt.Sprintf("%s/%s/Backstore#%d:%d ", slice.idxDefn.Bucket, slice.idxDefn.Name, slice.idxInstId, slice.idxPartnId)
 		bCfg.SwapinAfterLookup = slice.sysconf["plasma.backIndex.swapinAfterLookup"].Bool()
+		bCfg.TryEvictAfterRelocation = slice.sysconf["plasma.backIndex.tryEvictAfterRelocation"].Bool()
 
 		// Will also change based on indexer.plasma.backIndex.enablePageBloomFilter
 		bCfg.EnablePageBloomFilter = slice.sysconf["settings.enable_page_bloom_filter"].Bool()
@@ -2904,6 +2906,7 @@ func (mdb *plasmaSlice) UpdateConfig(cfg common.Config) {
 	mdb.mainstore.LSSCleanerMinReclaimSize = int64(mdb.sysconf["plasma.LSSCleanerMinReclaimSize"].Int())
 	mdb.mainstore.DisableReadCaching = mdb.sysconf["plasma.disableReadCaching"].Bool()
 	mdb.mainstore.SwapinAfterLookup = mdb.sysconf["plasma.mainIndex.swapinAfterLookup"].Bool()
+	mdb.mainstore.TryEvictAfterRelocation = mdb.sysconf["plasma.mainIndex.tryEvictAfterRelocation"].Bool()
 	mdb.mainstore.EnablePeriodicEvict = mdb.sysconf["plasma.mainIndex.enablePeriodicEvict"].Bool()
 	mdb.mainstore.EvictMinThreshold = mdb.sysconf["plasma.mainIndex.evictMinThreshold"].Float64()
 	mdb.mainstore.EvictMaxThreshold = mdb.sysconf["plasma.mainIndex.evictMaxThreshold"].Float64()
@@ -3011,6 +3014,7 @@ func (mdb *plasmaSlice) UpdateConfig(cfg common.Config) {
 		mdb.backstore.LSSCleanerMinReclaimSize = int64(mdb.sysconf["plasma.LSSCleanerMinReclaimSize"].Int())
 		mdb.backstore.DisableReadCaching = mdb.sysconf["plasma.disableReadCaching"].Bool()
 		mdb.backstore.SwapinAfterLookup = mdb.sysconf["plasma.backIndex.swapinAfterLookup"].Bool()
+		mdb.backstore.TryEvictAfterRelocation = mdb.sysconf["plasma.backIndex.tryEvictAfterRelocation"].Bool()
 		mdb.backstore.EnablePeriodicEvict = mdb.sysconf["plasma.backIndex.enablePeriodicEvict"].Bool()
 		mdb.backstore.EvictMinThreshold = mdb.sysconf["plasma.backIndex.evictMinThreshold"].Float64()
 		mdb.backstore.EvictMaxThreshold = mdb.sysconf["plasma.backIndex.evictMaxThreshold"].Float64()

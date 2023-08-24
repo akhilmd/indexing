@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/couchbase/indexing/secondary/tools/randdocs"
 	"io/ioutil"
 	"os"
+
+	"github.com/couchbase/indexing/secondary/tools/randdocs"
 )
 
 func main() {
@@ -15,6 +16,7 @@ func main() {
 	config := flag.String("config", "config.json", "Config file")
 	Threads := flag.Int("Threads", -1, "Number of threads")
 	NumDocs := flag.Int("NumDocs", -1, "Number of docs")
+	Ops := flag.Int("Ops", -1, "Number of ops")
 	DocIdLen := flag.Int("DocIdLen", -1, "Length of docid")
 	UseRandDocID := flag.Bool("UseRandDocID", false, "Use Random docid")
 	FieldSize := flag.Int("FieldSize", -1, "Field size will be at least this much")
@@ -72,6 +74,10 @@ func main() {
 
 	if *OpsPerSec != -1 {
 		cfg.OpsPerSec = *OpsPerSec
+	}
+
+	if *Ops != -1 {
+		cfg.Ops = *Ops
 	}
 
 	if *Iterations != -1 {

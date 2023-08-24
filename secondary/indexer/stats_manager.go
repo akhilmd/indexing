@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/couchbase/plasma"
 	"hash/crc32"
 	"math"
 	"net/http"
@@ -29,6 +28,9 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/couchbase/plasma"
+	"github.com/couchbase/plasma/iostat"
 
 	"github.com/couchbase/cbauth"
 	"github.com/couchbase/indexing/secondary/audit"
@@ -3166,6 +3168,35 @@ func (s *statsManager) handleStatsReq(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var startedIOStat int64
+var lastIOStat *iostat.DeviceUtilizationReport
+
+func tryStartIOStats() {
+	if !atomic.CompareAndSwapInt64(&startedIOStat, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt64(&startedIOStat, 0)
+
+	logging.Infof("tryStartIOStats: started!")
+
+	quit := make(chan interface{})
+	defer close(quit)
+	reporter := iostat.NewReporter(time.Second, quit)
+	reportsCh, err := reporter.GetIOStatsCh()
+	if err != nil {
+		logging.Infof("tryStartIOStats: Failed to get iostat ch: err[%V]", err)
+		return
+	}
+
+	for {
+		select {
+		case durs := <-reportsCh:
+			dur := durs["sdb"]
+			lastIOStat = &dur
+		}
+	}
+}
+
 func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	creds, valid, err := common.IsAuthValid(r)
 	if err != nil {
@@ -3190,6 +3221,8 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	go tryStartIOStats()
 
 	is := s.stats.Get()
 	if is == nil {
@@ -3251,6 +3284,30 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// aggregated plasma stats
 	if common.GetStorageMode() == common.PLASMA {
 		aggregatedPlasmaStats := plasma.GetAggregatedStats(plasma.ListShards())
+
+		naaam := "rPerS"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.RPS)))))...)
+
+		naaam = "wPerS"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.WPS)))))...)
+
+		naaam = "rkbPerS"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.KBReadPS)))))...)
+
+		naaam = "wkbPerS"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.KBWrtnPS)))))...)
+
+		naaam = "avgQuSz"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.AvgQuSz)))))...)
+
+		naaam = "percUtil"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.PctUtil)))))...)
 
 		out = append(out, []byte(fmt.Sprintf("# TYPE %vcurrent_quota gauge\n", PLASMA_METRICS_PREFIX))...)
 		out = append(out, []byte(fmt.Sprintf("%vcurrent_quota %v\n", PLASMA_METRICS_PREFIX, plasma.GetMemQuota()))...)
@@ -3354,7 +3411,7 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		out = append(out, []byte(fmt.Sprintf("%vnum_tenants %v\n", METRICS_PREFIX, is.numTenants.Value()))...)
 	}
 
-	appendPlasmaAggrSts := func (sts *plasma.SStats, group string) {
+	appendPlasmaAggrSts := func(sts *plasma.SStats, group string) {
 		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sinserts gauge\n", STORAGE_METRICS_PREFIX, group))...)
 		out = append(out, []byte(fmt.Sprintf("%v%sinserts %v\n", STORAGE_METRICS_PREFIX, group, sts.Inserts))...)
 
