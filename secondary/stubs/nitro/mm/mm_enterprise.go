@@ -23,6 +23,34 @@ func AllocSize() uint64 {
 	return ee.AllocSize()
 }
 
+func ActiveSize() uint64 {
+	return ee.ActiveSize()
+}
+
+func MetaSize() uint64 {
+	return ee.MetaSize()
+}
+
+func DirtySize() uint64 {
+	return ee.DirtySize()
+}
+
+func UsableSize() uint64 {
+	return ee.UsableSize()
+}
+
+func RealSize() uint64 {
+	return ee.RealSize()
+}
+
+func GetBinsStats() map[string]ee.JemallocBinStats {
+	return ee.GetBinsStats()
+}
+
+func GetBinsStatsPerArena() map[string]ee.JemallocBinStats {
+	return ee.GetBinsStatsPerArena()
+}
+
 func Stats() string {
 	return ee.Stats()
 }

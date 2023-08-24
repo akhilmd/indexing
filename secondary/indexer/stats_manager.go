@@ -3285,7 +3285,57 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if common.GetStorageMode() == common.PLASMA {
 		aggregatedPlasmaStats := plasma.GetAggregatedStats(plasma.ListShards())
 
-		naaam := "rPerS"
+		naaam := "jemalloc_resident"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, mm.Size()))...)
+
+		naaam = "jemalloc_allocated"
+		allocSz := mm.AllocSize()
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, allocSz))...)
+
+		naaam = "jemalloc_dirty"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, mm.DirtySize()))...)
+
+		naaam = "jemalloc_active"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, mm.ActiveSize()))...)
+
+		naaam = "jemalloc_metadata"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, mm.MetaSize()))...)
+
+		naaam = "jemalloc_usable"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, mm.UsableSize()))...)
+
+		naaam = "jemalloc_real"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, mm.RealSize()))...)
+
+		memStatsSzTotal := aggregatedPlasmaStats.MemSz+aggregatedPlasmaStats.MemSzIndex+aggregatedPlasmaStats.MemSzBloom+aggregatedPlasmaStats.ReclaimPending+aggregatedPlasmaStats.BufMemUsed+aggregatedPlasmaStats.RecoveryBufMemUsed
+		naaam = "memory_stats_size_total"
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, memStatsSzTotal))...)
+
+		jeBinsStats := mm.GetBinsStatsPerArena()
+		for bin, binSts := range jeBinsStats {
+			naaam = fmt.Sprintf("jemalloc_frag_size_%s", bin)
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+			binFragSz := ((binSts.FragPercent * binSts.Resident)/100)
+			out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, binFragSz))...)
+		}
+
+		jeBinsStats = mm.GetBinsStats()
+		for bin, binSts := range jeBinsStats {
+			naaam = fmt.Sprintf("jemalloc_frag_size_%s", bin)
+			out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
+			binFragSz := ((binSts.FragPercent * binSts.Resident)/100)
+			out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, binFragSz))...)
+		}
+
+		naaam = "rPerS"
 		out = append(out, []byte(fmt.Sprintf("# TYPE %v%s gauge\n", PLASMA_METRICS_PREFIX, naaam))...)
 		out = append(out, []byte(fmt.Sprintf("%v%s %v\n", PLASMA_METRICS_PREFIX, naaam, int(math.Round((lastIOStat.RPS)))))...)
 
