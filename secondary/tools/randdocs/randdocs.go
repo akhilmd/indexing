@@ -65,7 +65,7 @@ func randString(n int) string {
 
 func Run(cfg Config) error {
 	rndr := rnd.New(rnd.NewSource(time.Now().UnixNano()))
-	var rndrs []*rnd.Rand
+	// var rndrs []*rnd.Rand
 
 	cfgBytes, err := json.MarshalIndent(cfg, "", "    ")
 	if err != nil {
@@ -81,7 +81,7 @@ func Run(cfg Config) error {
 	}
 	defer b.Close()
 
-	var cnt, ttries int64
+	var cnt, ttries, tetries int64
 	fullStart := time.Now()
 
 	opsPerSec := time.Duration(cfg.OpsPerSec / cfg.Threads)
@@ -155,15 +155,21 @@ func Run(cfg Config) error {
 						value["body"] = fmt.Sprintf("%s-%s", prefix, suffix)
 						//fmt.Printf("new-val[%s] doHot[%v]\n", value["body"], doHot)
 
+						etries := 0
+					errRetry:
+						etries++
+
 						localErr := b.Set(docid, 0, value)
 						if localErr != nil {
-							fmt.Println(err)
-							err = localErr
+							fmt.Println(localErr)
+							time.Sleep(250 * time.Microsecond)
+							goto errRetry
 						}
 
 						m := atomic.AddInt64(&ttries, int64(tries))
+						em := atomic.AddInt64(&tetries, int64(etries))
 						if k := atomic.AddInt64(&cnt, 1); k%100000 == 0 {
-							fmt.Printf("Set %7d docs at %dops/sec with %.1ftries/op\n", k, k/(1+int64(time.Since(fullStart).Seconds())), float64(m)/float64(k))
+							fmt.Printf("Set %7d docs at %dops/sec with %.1ftries/op %.1fetries/op\n", k, k/(1+int64(time.Since(fullStart).Seconds())), float64(m)/float64(k), float64(em)/float64(k))
 						}
 
 						dur := time.Since(start)
@@ -192,19 +198,19 @@ func Run(cfg Config) error {
 			var wg sync.WaitGroup
 			for thr := 0; thr < cfg.Threads; thr++ {
 				wg.Add(1)
-				rndrs = append(rndrs, rnd.New(rnd.NewSource(time.Now().UnixNano())))
-				go func(offset, id int) {
-					fmt.Printf("thr offset[%d] num[%d]\n", offset, offset+cfg.NumDocs/cfg.Threads)
+				// rndrs = append(rndrs, )
+				go func(offset, id int, rndrT *rnd.Rand) {
+					fmt.Printf("thr offset[%d] num[%d]\n", offset, cfg.Ops/cfg.Threads)
 					defer wg.Done()
 
 					for i := 0; i < cfg.Ops/cfg.Threads; i++ {
 						start := time.Now()
-						doHot := rndr.Intn(100) < cfg.HotMutPerc
+						doHot := rndrT.Intn(100) < cfg.HotMutPerc
 						tries := 0
 
 					retry:
 						tries++
-						roff := rndrs[id].Intn(cfg.NumDocs)
+						roff := rndrT.Intn(cfg.NumDocs)
 						gotHot := roff < ((cfg.NumDocs * int(cfg.HotSizePerc)) / 100)
 						if gotHot != doHot {
 							goto retry
@@ -226,15 +232,21 @@ func Run(cfg Config) error {
 						value := make(map[string]interface{})
 						value["body"] = fmt.Sprintf("%s-%s", prefix, suffix)
 
+						etries := 0
+					errRetry:
+						etries++
+
 						localErr := b.Set(docid, 0, value)
 						if localErr != nil {
-							fmt.Println(err)
-							err = localErr
+							// fmt.Println(localErr)
+							time.Sleep(250 * time.Microsecond)
+							goto errRetry
 						}
 
 						m := atomic.AddInt64(&ttries, int64(tries))
+						em := atomic.AddInt64(&tetries, int64(etries))
 						if k := atomic.AddInt64(&cnt, 1); k%100000 == 0 {
-							fmt.Printf("Set %7d docs at %dops/sec with %.1ftries/op\n", k, k/(1+int64(time.Since(fullStart).Seconds())), float64(m)/float64(k))
+							fmt.Printf("Set %7d docs at %dops/sec with %.1ftries/op %.1fetries/op\n", k, k/(1+int64(time.Since(fullStart).Seconds())), float64(m)/float64(k), float64(em)/float64(k))
 						}
 
 						dur := time.Since(start)
@@ -247,7 +259,7 @@ func Run(cfg Config) error {
 							return
 						}
 					}
-				}(thr*cfg.NumDocs/cfg.Threads, thr)
+				}(thr*cfg.NumDocs/cfg.Threads, thr, rnd.New(rnd.NewSource(time.Now().UnixNano())))
 			}
 			wg.Wait()
 
