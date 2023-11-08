@@ -38,6 +38,7 @@ import (
 	"github.com/couchbase/indexing/secondary/stats"
 	"github.com/couchbase/indexing/secondary/stubs/nitro/mm"
 	"github.com/couchbase/logstats/logstats"
+	"github.com/couchbase/plasma"
 	"github.com/golang/snappy"
 )
 
@@ -3000,6 +3001,7 @@ func (s *statsManager) RegisterRestEndpoints() {
 	mux.HandleFunc("/stats/storage/mm", s.handleStorageMMStatsReq)
 	mux.HandleFunc("/stats/storage", s.handleStorageStatsReq)
 	mux.HandleFunc("/stats/storage/shard", s.handleShardStorageStatsReq)
+	mux.HandleFunc("/stats/storage/aggregated", s.handleAggregatedStorageStatsReq)
 	mux.HandleFunc("/stats/reset", s.handleStatsResetReq)
 	mux.HandleFunc("/storage/jemalloc/profile", s.jemallocMemoryProfileHandler)
 	mux.HandleFunc("/storage/jemalloc/profileActivate", s.jemallocMemoryProfileActivateHandler)
@@ -3422,6 +3424,25 @@ func (s *statsManager) getShardStorageStats() ([]byte, error) {
 	return json.Marshal(res)
 }
 
+type AggrStorageStats struct {
+	MergedStores, MainStore, BackStore interface{}
+}
+
+func (s *statsManager) getAggregatedStorageStats() ([]byte, error) {
+	var sts AggrStorageStats
+
+	mainstoreShards := plasma.ListShardsByGroup(MAIN_INDEX)
+	sts.MainStore = plasma.GetAggregatedStats(mainstoreShards)
+
+	backstoreShards := plasma.ListShardsByGroup(BACK_INDEX)
+	sts.BackStore = plasma.GetAggregatedStats(backstoreShards)
+
+	allShards := append(mainstoreShards, backstoreShards...)
+	sts.MergedStores = plasma.GetAggregatedStats(allShards)
+
+	return json.Marshal(sts)
+}
+
 func (s *statsManager) getStorageStats(spec *statsSpec, creds cbauth.Creds) string {
 	var result strings.Builder
 	replych := make(chan []IndexStorageStats)
@@ -3539,7 +3560,7 @@ func (s *statsManager) handleShardStorageStatsReq(w http.ResponseWriter, r *http
 		w.Write([]byte(err.Error() + "\n"))
 		return
 	} else if !valid {
-		audit.Audit(common.AUDIT_UNAUTHORIZED, r, "StatsManager::handleStorageStatsReq", "")
+		audit.Audit(common.AUDIT_UNAUTHORIZED, r, "StatsManager::handleShardStorageStatsReq", "")
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write(common.HTTP_STATUS_UNAUTHORIZED)
 		return
@@ -3553,6 +3574,42 @@ func (s *statsManager) handleShardStorageStatsReq(w http.ResponseWriter, r *http
 		} else { // return error
 			w.WriteHeader(200)
 			w.Write(resp)
+		}
+	} else {
+		w.WriteHeader(400)
+		w.Write([]byte("Unsupported method"))
+	}
+}
+
+func (s *statsManager) handleAggregatedStorageStatsReq(w http.ResponseWriter, r *http.Request) {
+	_, valid, err := common.IsAuthValid(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error() + "\n"))
+		return
+	} else if !valid {
+		audit.Audit(common.AUDIT_UNAUTHORIZED, r, "StatsManager::handleAggregatedStorageStatsReq", "")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write(common.HTTP_STATUS_UNAUTHORIZED)
+		return
+	}
+
+	if r.Method == "POST" || r.Method == "GET" {
+
+		stats := s.stats.Get()
+
+		if common.IndexerState(stats.indexerState.Value()) != common.INDEXER_BOOTSTRAP {
+			resp, err := s.getAggregatedStorageStats()
+			if err != nil {
+				w.WriteHeader(200)
+				w.Write([]byte(fmt.Sprintf("Error observed, err: %v", err)))
+			} else {
+				w.WriteHeader(200)
+				w.Write(resp)
+			}
+		} else {
+			w.WriteHeader(200)
+			w.Write([]byte("Indexer In Warmup. Please try again later."))
 		}
 	} else {
 		w.WriteHeader(400)
