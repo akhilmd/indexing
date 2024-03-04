@@ -13,6 +13,8 @@ package indexer
 
 import (
 	"fmt"
+	"math"
+	"strings"
 
 	"github.com/couchbase/indexing/secondary/common"
 	"github.com/couchbase/plasma"
@@ -112,6 +114,38 @@ func populateAggregatedStorageMetrics(st []byte) []byte {
 
 		st = append(st, []byte(fmt.Sprintf("# TYPE %vcleaner_blk_read_bs gauge\n", PLASMA_METRICS_PREFIX))...)
 		st = append(st, []byte(fmt.Sprintf("%vcleaner_blk_read_bs %v\n", PLASMA_METRICS_PREFIX, aggregatedPlasmaStats.LSSCleanerBlkReadBytes+aggregatedPlasmaStats.RecoveryCleanerBlkReadBytes))...)
+
+		populateStorageIOStatMetrics := func(dev, dev2 string) {
+			naaam := "rPerS_"
+			st = append(st, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", PLASMA_METRICS_PREFIX, naaam, dev2))...)
+			st = append(st, []byte(fmt.Sprintf("%v%s%s %v\n", PLASMA_METRICS_PREFIX, naaam, dev2, int(math.Round((lastIOStat[dev].RPS)))))...)
+
+			naaam = "wPerS_"
+			st = append(st, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", PLASMA_METRICS_PREFIX, naaam, dev2))...)
+			st = append(st, []byte(fmt.Sprintf("%v%s%s %v\n", PLASMA_METRICS_PREFIX, naaam, dev2, int(math.Round((lastIOStat[dev].WPS)))))...)
+
+			naaam = "rkbPerS_"
+			st = append(st, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", PLASMA_METRICS_PREFIX, naaam, dev2))...)
+			st = append(st, []byte(fmt.Sprintf("%v%s%s %v\n", PLASMA_METRICS_PREFIX, naaam, dev2, int(math.Round((lastIOStat[dev].KBReadPS)))))...)
+
+			naaam = "wkbPerS_"
+			st = append(st, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", PLASMA_METRICS_PREFIX, naaam, dev2))...)
+			st = append(st, []byte(fmt.Sprintf("%v%s%s %v\n", PLASMA_METRICS_PREFIX, naaam, dev2, int(math.Round((lastIOStat[dev].KBWrtnPS)))))...)
+
+			naaam = "avgQuSz_"
+			st = append(st, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", PLASMA_METRICS_PREFIX, naaam, dev2))...)
+			st = append(st, []byte(fmt.Sprintf("%v%s%s %v\n", PLASMA_METRICS_PREFIX, naaam, dev2, int(math.Round((lastIOStat[dev].AvgQuSz)))))...)
+
+			naaam = "percUtil_"
+			st = append(st, []byte(fmt.Sprintf("# TYPE %v%s%s gauge\n", PLASMA_METRICS_PREFIX, naaam, dev2))...)
+			st = append(st, []byte(fmt.Sprintf("%v%s%s %v\n", PLASMA_METRICS_PREFIX, naaam, dev2, int(math.Round((lastIOStat[dev].PctUtil)))))...)
+		}
+
+		liosMut.RLock()
+		for d, _ := range lastIOStat {
+			populateStorageIOStatMetrics(d, strings.ReplaceAll(d, "-", "__"))
+		}
+		liosMut.RUnlock()
 	}
 
 	return st

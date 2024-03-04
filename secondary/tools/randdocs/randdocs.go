@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	rnd "math/rand"
+	"net"
+	"net/http"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,10 +21,13 @@ import (
 )
 
 type Config struct {
-	ClusterAddr   string
-	Bucket        string
-	NumDocs       int
-	Ops           int
+	ClusterAddr string
+	Bucket      string
+	NumDocs     int
+
+	Ops        int
+	StatForOps string
+
 	DocIdLen      int
 	FieldSize     int
 	ArrayLen      int
@@ -77,6 +83,79 @@ func Run(cfg Config) error {
 		return err
 	}
 	defer b.Close()
+
+	host, _, err := net.SplitHostPort(cfg.ClusterAddr)
+	if err != nil {
+		return err
+	}
+	indexerAddr := fmt.Sprintf("%s:%s", host, "9102")
+
+	prevVal := int64(-1)
+	shouldProceed := func() (ppp bool) {
+		client := &http.Client{}
+		address := "http://" + indexerAddr + "/stats?async=false"
+
+		req, _ := http.NewRequest("GET", address, nil)
+		req.SetBasicAuth("Administrator", "asdasd")
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+		resp, err := client.Do(req)
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			fmt.Printf(address)
+			fmt.Printf("%v", req)
+			fmt.Printf("%v", resp)
+			fmt.Printf("Get stats failed\n")
+		}
+
+		if err != nil {
+			fmt.Println("Failed to get stats from indexer! err =", err)
+			return false
+		}
+
+		defer resp.Body.Close()
+
+		response := make(map[string]interface{})
+		body, _ := ioutil.ReadAll(resp.Body)
+		err = json.Unmarshal(body, &response)
+		if err != nil {
+			fmt.Println("Failed to parse stats from indexer! err =", err)
+			return false
+		}
+
+		val := int64(response[cfg.StatForOps].(float64))
+		fmt.Println("got val =", val)
+		if pVal := atomic.LoadInt64(&prevVal); pVal == -1 {
+			fmt.Println("Starting with val =", val)
+			atomic.StoreInt64(&prevVal, val)
+			return true
+		} else {
+			diff := val - prevVal
+			if diff < 0 {
+				fmt.Println("Failed! stat has reduced!")
+				return false
+			} else if diff > int64(cfg.Ops) {
+				fmt.Println("Stat has reached amt ", val, diff, cfg.Ops)
+				return false
+			}
+		}
+
+		return true
+	}
+
+	cachedShouldProceed := int64(1)
+	shouldProceed2 := func() bool {
+		if atomic.LoadInt64(&cachedShouldProceed) == 1 {
+			if !shouldProceed() {
+				atomic.StoreInt64(&cachedShouldProceed, 0)
+				return false
+			}
+
+		} else {
+			return false
+		}
+
+		return true
+	}
 
 	var cnt, ttries, tetries int64
 	fullStart := time.Now()
@@ -200,24 +279,37 @@ func Run(cfg Config) error {
 			var wg sync.WaitGroup
 
 			for thr := 0; thr < cfg.Threads; thr++ {
-				
+
 				wg.Add(1)
 				go func(offset, id int, rndrT *rnd.Rand) {
+					if !shouldProceed2() {
+						return
+					}
 
 					fmt.Printf("new thread offset[%d] num[%d]\n", offset, cfg.Ops/cfg.Threads)
 					defer wg.Done()
 
-					for i := 0; i < cfg.Ops/cfg.Threads; i++ {
+					for i := 0; i < (10 * cfg.Ops / cfg.Threads); i++ {
 						start := time.Now()
 						doHot := rndrT.Intn(100) < cfg.HotMutPerc
 						tries := 0
 
 					retry:
 						tries++
-						roff := rndrT.Intn(cfg.NumDocs)
-						gotHot := roff < ((cfg.NumDocs * int(cfg.HotSizePerc)) / 100)
-						if gotHot != doHot {
-							goto retry
+
+						roff := 0
+						if doHot {
+							mx := (cfg.NumDocs * int(cfg.HotSizePerc)) / 100
+							l := mx / cfg.Threads
+							o := id * l
+							roff = o + rndrT.Intn(l)
+						} else {
+							panic("bruh")
+							roff = rndrT.Intn(cfg.NumDocs)
+							gotHot := roff < ((cfg.NumDocs * int(cfg.HotSizePerc)) / 100)
+							if gotHot != doHot {
+								goto retry
+							}
 						}
 
 						// got the type we want!!
@@ -252,6 +344,15 @@ func Run(cfg Config) error {
 						em := atomic.AddInt64(&tetries, int64(etries))
 						if k := atomic.AddInt64(&cnt, 1); k%100000 == 0 {
 							fmt.Printf("Set %7d docs at %dops/sec with %.1ftries/op %.1fetries/op\n", k, k/(1+int64(time.Since(fullStart).Seconds())), float64(m)/float64(k), float64(em)/float64(k))
+							if !shouldProceed2() {
+								fmt.Println("done reaching diff!")
+								return
+							}
+						}
+
+						if atomic.LoadInt64(&cachedShouldProceed) == 0 {
+							fmt.Println("cac done reaching diff!")
+							return
 						}
 
 						dur := time.Since(start)
@@ -261,6 +362,7 @@ func Run(cfg Config) error {
 						}
 
 						if durr > 0 && time.Since(mutStart) > durr {
+							fmt.Println("Done due to durr", durr)
 							return
 						}
 					}

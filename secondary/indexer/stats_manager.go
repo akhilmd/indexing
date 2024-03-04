@@ -39,6 +39,7 @@ import (
 	"github.com/couchbase/indexing/secondary/stubs/nitro/mm"
 	"github.com/couchbase/logstats/logstats"
 	"github.com/couchbase/plasma"
+	"github.com/couchbase/plasma/iostat"
 	"github.com/golang/snappy"
 )
 
@@ -3166,6 +3167,40 @@ func (s *statsManager) handleStatsReq(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var startedIOStat int64
+var lastIOStat map[string]iostat.DeviceUtilizationReport
+var liosMut sync.RWMutex
+
+func tryStartIOStats() {
+	if !atomic.CompareAndSwapInt64(&startedIOStat, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt64(&startedIOStat, 0)
+
+	logging.Infof("tryStartIOStats: started!")
+
+	quit := make(chan interface{})
+	defer close(quit)
+	reporter := iostat.NewReporter(time.Second, quit)
+	reportsCh, err := reporter.GetIOStatsCh()
+	if err != nil {
+		logging.Infof("tryStartIOStats: Failed to get iostat ch: err[%V]", err)
+		return
+	}
+
+	for {
+		select {
+		case durs := <-reportsCh:
+			// dur := durs["sda"]
+			// lastIOStat = &dur
+
+			liosMut.Lock()
+			lastIOStat = durs
+			liosMut.Unlock()
+		}
+	}
+}
+
 func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	creds, valid, err := common.IsAuthValid(r)
 	if err != nil {
@@ -3190,6 +3225,8 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	go tryStartIOStats()
 
 	is := s.stats.Get()
 	if is == nil {
@@ -3265,6 +3302,56 @@ func (s *statsManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// aggregated plasma stats
 	out = populateAggregatedStorageMetrics(out)
+
+	appendPlasmaAggrSts := func(sts *plasma.SStats, group string) {
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sinserts gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sinserts %v\n", PLASMA_METRICS_PREFIX, group, sts.Inserts))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%snum_lss_reads gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%snum_lss_reads %v\n", PLASMA_METRICS_PREFIX, group, sts.NumLSSReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%slss_blk_read_bs gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%slss_blk_read_bs %v\n", PLASMA_METRICS_PREFIX, group, sts.LSSBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sbytes_written gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sbytes_written %v\n", PLASMA_METRICS_PREFIX, group, sts.BytesWritten))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sbytes_incoming gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sbytes_incoming %v\n", PLASMA_METRICS_PREFIX, group, sts.BytesIncoming))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sresident_ratio gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sresident_ratio %v\n", PLASMA_METRICS_PREFIX, group, sts.ResidentRatio))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%sfrag gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%sfrag %v\n", PLASMA_METRICS_PREFIX, group, sts.LSSFrag))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%slookup_num_reads gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%slookup_num_reads %v\n", PLASMA_METRICS_PREFIX, group, sts.LookupNumLSSReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%slookup_lss_blk_read_bs gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%slookup_lss_blk_read_bs %v\n", PLASMA_METRICS_PREFIX, group, sts.LookupLSSBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_num_reads gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_num_reads %v\n", PLASMA_METRICS_PREFIX, group, sts.NumLSSCleanerReads))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scleaner_lss_blk_read_bs gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scleaner_lss_blk_read_bs %v\n", PLASMA_METRICS_PREFIX, group, sts.LSSCleanerBlkReadBytes))...)
+
+		out = append(out, []byte(fmt.Sprintf("# TYPE %v%scompacts gauge\n", PLASMA_METRICS_PREFIX, group))...)
+		out = append(out, []byte(fmt.Sprintf("%v%scompacts %v\n", PLASMA_METRICS_PREFIX, group, sts.Compacts))...)
+	}
+
+	mainstoreShards := plasma.ListShardsByGroup(MAIN_INDEX)
+	mSts := plasma.GetAggregatedStats(mainstoreShards)
+	appendPlasmaAggrSts(mSts, "mainstore_")
+
+	backstoreShards := plasma.ListShardsByGroup(BACK_INDEX)
+	bSts := plasma.GetAggregatedStats(backstoreShards)
+	appendPlasmaAggrSts(bSts, "backstore_")
+
+	allShards := append(mainstoreShards, backstoreShards...)
+	mergedSts := plasma.GetAggregatedStats(allShards)
+	appendPlasmaAggrSts(mergedSts, "merged_")
 
 	if common.IsServerlessDeployment() {
 		out = append(out, []byte(fmt.Sprintf("# TYPE %vmemory_used_actual gauge\n", METRICS_PREFIX))...)
