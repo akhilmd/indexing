@@ -1552,6 +1552,13 @@ var SystemConfig = Config{
 		false, // mutable
 		false, // case-insensitive
 	},
+	"indexer.plasma.mainIndex.hotCold": ConfigValue{
+		false,
+		"hot cold for mainstore",
+		false,
+		false, // mutable
+		false, // case-insensitive
+	},
 	"indexer.plasma.mainIndex.maxLSSPageSegments": ConfigValue{
 		4,
 		"Maximum number of page segments on LSS for a page",
@@ -1736,6 +1743,13 @@ var SystemConfig = Config{
 		5,
 		"Threshold for triggering page merge",
 		5,
+		false, // mutable
+		false, // case-insensitive
+	},
+	"indexer.plasma.backIndex.hotCold": ConfigValue{
+		false,
+		"hot cold for backstore",
+		false,
 		false, // mutable
 		false, // case-insensitive
 	},
@@ -4025,7 +4039,7 @@ var SystemConfig = Config{
 	},
 	"indexer.plasma.shardCopy.rpc.client.rateControl.adjustRatioMax": ConfigValue{
 		0.75,
-		"Client request rate maximum adjustment factor during rate control."+
+		"Client request rate maximum adjustment factor during rate control." +
 			"We can use this to limit congestion at server",
 		0.75,
 		false,

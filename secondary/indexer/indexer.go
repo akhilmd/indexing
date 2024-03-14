@@ -12241,6 +12241,7 @@ func getLocalHttpAddr(cfg common.Config) string {
 // But if user disables the feature before upgrade to 7.1 we will still enable it.
 // By default feature is disabled, so not handling the case of override in case of disabling a already disabled feature.
 func (idx *indexer) enablePlasmaInMemCompression() {
+	// return
 
 	defer func() {
 		if r := recover(); r != nil {

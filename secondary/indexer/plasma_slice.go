@@ -503,6 +503,7 @@ func (slice *plasmaSlice) initStores(isInitialBuild bool, cancelCh chan bool) er
 		mCfg.MaxDeltaChainLen = slice.sysconf["plasma.mainIndex.maxNumPageDeltas"].Int()
 		mCfg.MaxPageItems = slice.sysconf["plasma.mainIndex.pageSplitThreshold"].Int()
 		mCfg.MinPageItems = slice.sysconf["plasma.mainIndex.pageMergeThreshold"].Int()
+		mCfg.EnableHotCold = slice.sysconf["plasma.mainIndex.hotCold"].Bool()
 		mCfg.MaxPageLSSSegments = slice.sysconf["plasma.mainIndex.maxLSSPageSegments"].Int()
 		mCfg.LSSCleanerThreshold = slice.sysconf["plasma.mainIndex.LSSFragmentation"].Int()
 		mCfg.LSSCleanerMaxThreshold = slice.sysconf["plasma.mainIndex.maxLSSFragmentation"].Int()
@@ -540,6 +541,7 @@ func (slice *plasmaSlice) initStores(isInitialBuild bool, cancelCh chan bool) er
 		bCfg.MaxDeltaChainLen = slice.sysconf["plasma.backIndex.maxNumPageDeltas"].Int()
 		bCfg.MaxPageItems = slice.sysconf["plasma.backIndex.pageSplitThreshold"].Int()
 		bCfg.MinPageItems = slice.sysconf["plasma.backIndex.pageMergeThreshold"].Int()
+		bCfg.EnableHotCold = slice.sysconf["plasma.backIndex.hotCold"].Bool()
 		bCfg.MaxPageLSSSegments = slice.sysconf["plasma.backIndex.maxLSSPageSegments"].Int()
 		bCfg.LSSCleanerThreshold = slice.sysconf["plasma.backIndex.LSSFragmentation"].Int()
 		bCfg.LSSCleanerMaxThreshold = slice.sysconf["plasma.backIndex.maxLSSFragmentation"].Int()
@@ -3174,6 +3176,7 @@ func (mdb *plasmaSlice) UpdateConfig(cfg common.Config) {
 	mdb.mainstore.EnforceKeyRange = cfg["plasma.enforceKeyRange"].Bool()
 
 	mdb.mainstore.CheckpointInterval = time.Second * time.Duration(cfg["plasma.checkpointInterval"].Int())
+	mdb.mainstore.EnableHotCold = cfg["plasma.mainIndex.hotCold"].Bool()
 	mdb.mainstore.MaxPageLSSSegments = mdb.sysconf["plasma.mainIndex.maxLSSPageSegments"].Int()
 	mdb.mainstore.LSSCleanerThreshold = mdb.sysconf["plasma.mainIndex.LSSFragmentation"].Int()
 	mdb.mainstore.LSSCleanerMaxThreshold = mdb.sysconf["plasma.mainIndex.maxLSSFragmentation"].Int()
@@ -3294,6 +3297,7 @@ func (mdb *plasmaSlice) UpdateConfig(cfg common.Config) {
 		mdb.backstore.MaxPageSize = cfg["plasma.MaxPageSize"].Int()
 		mdb.backstore.EnforceKeyRange = cfg["plasma.enforceKeyRange"].Bool()
 		mdb.backstore.CheckpointInterval = mdb.mainstore.CheckpointInterval
+		mdb.backstore.EnableHotCold = cfg["plasma.backIndex.hotCold"].Bool()
 		mdb.backstore.MaxPageLSSSegments = mdb.sysconf["plasma.backIndex.maxLSSPageSegments"].Int()
 		mdb.backstore.LSSCleanerThreshold = mdb.sysconf["plasma.backIndex.LSSFragmentation"].Int()
 		mdb.backstore.LSSCleanerMaxThreshold = mdb.sysconf["plasma.backIndex.maxLSSFragmentation"].Int()
